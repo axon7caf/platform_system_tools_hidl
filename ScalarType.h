@@ -39,8 +39,14 @@ struct ScalarType : public Type {
 
     ScalarType(Kind kind);
 
+    bool isScalar() const override;
+
+    bool isElidableType() const override;
     const ScalarType *resolveToScalarType() const override;
 
+    bool canCheckEquality() const override;
+
+    std::string typeName() const override;
     bool isValidEnumStorageType() const;
 
     void addNamedTypesToSet(std::set<const FQName> &set) const override;

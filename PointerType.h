@@ -14,18 +14,20 @@
  * limitations under the License.
  */
 
-#ifndef HANDLE_TYPE_H_
+#ifndef POINTER_TYPE_H_
 
-#define HANDLE_TYPE_H_
+#define POINTER_TYPE_H_
 
 #include "Type.h"
 
 namespace android {
 
-struct HandleType : public Type {
-    HandleType();
+struct PointerType : public Type {
+    PointerType();
 
-    bool isHandle() const override;
+    bool isPointer() const override;
+
+    bool isElidableType() const override;
 
     void addNamedTypesToSet(std::set<const FQName> &set) const override;
 
@@ -43,24 +45,10 @@ struct HandleType : public Type {
             bool isReader,
             ErrorMode mode) const override;
 
-    void emitReaderWriterEmbedded(
-            Formatter &out,
-            size_t depth,
-            const std::string &name,
-            const std::string &sanitizedName,
-            bool nameIsPointer,
-            const std::string &parcelObj,
-            bool parcelObjIsPointer,
-            bool isReader,
-            ErrorMode mode,
-            const std::string &parentName,
-            const std::string &offsetText) const override;
-
     bool needsEmbeddedReadWrite() const override;
+    bool resultNeedsDeref() const override;
 
     bool isJavaCompatible() const override;
-
-    bool useNameInEmitReaderWriterEmbedded(bool isReader) const override;
 
     void getAlignmentAndSize(size_t *align, size_t *size) const override;
 
@@ -69,5 +57,5 @@ struct HandleType : public Type {
 
 }  // namespace android
 
-#endif  // HANDLE_TYPE_H_
+#endif  // POINTER_TYPE_H_
 

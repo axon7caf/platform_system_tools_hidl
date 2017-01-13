@@ -7,12 +7,9 @@
 
 #include <gtest/gtest.h>
 
+#include <hidl/HidlTransportSupport.h>
 #include <hidl/Status.h>
-#include <hwbinder/IPCThreadState.h>
-#include <hwbinder/ProcessState.h>
-
 using ::android::sp;
-using ::android::Thread;
 using ::android::hardware::tests::baz::V1_0::IBase;
 using ::android::hardware::tests::baz::V1_0::IBaz;
 using ::android::hardware::tests::baz::V1_0::IBazCallback;
@@ -20,16 +17,25 @@ using ::android::hardware::tests::baz::V1_0::IBazCallback;
 using ::android::hardware::hidl_array;
 using ::android::hardware::hidl_vec;
 using ::android::hardware::hidl_string;
+using ::android::hardware::configureRpcThreadpool;
+using ::android::hardware::joinRpcThreadpool;
 using ::android::hardware::Return;
 using ::android::hardware::Void;
 
 struct BazCallback : public IBazCallback {
     Return<void> heyItsMe(const sp<IBazCallback> &cb) override;
+    Return<void> hey() override;
 };
 
 Return<void> BazCallback::heyItsMe(
         const sp<IBazCallback> &cb) {
     LOG(INFO) << "SERVER: heyItsMe cb = " << cb.get();
+
+    return Void();
+}
+
+Return<void> BazCallback::hey() {
+    LOG(INFO) << "SERVER: hey";
 
     return Void();
 }
@@ -94,6 +100,11 @@ struct Baz : public IBaz {
             const hidl_vec<int32_t>& param, mapThisVector_cb _hidl_cb) override;
 
     Return<void> callMe(const sp<IBazCallback>& cb) override;
+
+    Return<void> callMeLater(const sp<IBazCallback>& cb) override;
+    Return<void> iAmFreeNow() override;
+    Return<void> dieNow() override;
+
     Return<IBaz::SomeEnum> useAnEnum(IBaz::SomeEnum zzz) override;
 
     Return<void> haveSomeStrings(
@@ -105,6 +116,16 @@ struct Baz : public IBaz {
             haveAStringVec_cb _hidl_cb) override;
 
     Return<void> returnABunchOfStrings(returnABunchOfStrings_cb _hidl_cb) override;
+
+    Return<void> takeAMask(IBase::BitField bf, uint8_t first,
+            const IBase::MyMask& second, uint8_t third, takeAMask_cb _hidl_cb) override;
+
+    Return<uint8_t> returnABitField() override;
+
+    Return<uint32_t> size(uint32_t size) override;
+
+private:
+    sp<IBazCallback> mStoredCallback;
 };
 
 Return<void> Baz::someBaseMethod() {
@@ -502,6 +523,26 @@ Return<void> Baz::callMe(const sp<IBazCallback>& cb) {
     return Void();
 }
 
+Return<void> Baz::callMeLater(const sp<IBazCallback>& cb) {
+    LOG(INFO) << "callMeLater " << cb.get();
+
+    mStoredCallback = cb;
+
+    return Void();
+}
+
+Return<void> Baz::iAmFreeNow() {
+    if (mStoredCallback != nullptr) {
+        mStoredCallback->hey();
+    }
+    return Void();
+}
+
+Return<void> Baz::dieNow() {
+    exit(1);
+    return Void();
+}
+
 Return<IBaz::SomeEnum> Baz::useAnEnum(IBaz::SomeEnum zzz) {
     LOG(INFO) << "useAnEnum " << (int)zzz;
 
@@ -548,6 +589,21 @@ Return<void> Baz::returnABunchOfStrings(returnABunchOfStrings_cb _hidl_cb) {
     return Void();
 }
 
+
+Return<void> Baz::takeAMask(IBase::BitField bf, uint8_t first,
+        const IBase::MyMask& second, uint8_t third, takeAMask_cb _hidl_cb) {
+    _hidl_cb(bf, bf | first, second.value & bf, (bf | bf) & third);
+    return Void();
+}
+
+Return<uint8_t> Baz::returnABitField() {
+    return 0;
+}
+
+Return<uint32_t> Baz::size(uint32_t size) {
+    return size;
+}
+
 static void usage(const char *me) {
     fprintf(stderr, "%s [-c]lient | [-s]erver\n", me);
 }
@@ -577,7 +633,7 @@ struct HidlTest : public ::testing::Test {
 
 template <typename T>
 static void EXPECT_OK(::android::hardware::Return<T> ret) {
-    EXPECT_TRUE(ret.getStatus().isOk());
+    EXPECT_TRUE(ret.isOk());
 }
 
 TEST_F(HidlTest, BazSomeBaseMethodTest) {
@@ -935,6 +991,11 @@ TEST_F(HidlTest, BazCallMeMethodTest) {
     EXPECT_OK(baz->callMe(new BazCallback()));
 }
 
+TEST_F(HidlTest, BazCallMeLaterMethodTest) {
+    EXPECT_OK(baz->callMeLater(new BazCallback()));
+    EXPECT_OK(baz->iAmFreeNow());
+}
+
 TEST_F(HidlTest, BazUseAnEnumMethodTest) {
     auto result = baz->useAnEnum(IBaz::SomeEnum::bar);
 
@@ -1028,12 +1089,9 @@ int main(int argc, char **argv) {
         return status;
     } else {
         sp<Baz> baz = new Baz;
-
+        configureRpcThreadpool(1, true /* callerWillJoin */);
         baz->registerAsService("baz");
-
-        ProcessState::self()->startThreadPool();
-        ProcessState::self()->setThreadPoolMaxThreadCount(0);
-        IPCThreadState::self()->joinThreadPool();
+        joinRpcThreadpool();
     }
 
     return 0;

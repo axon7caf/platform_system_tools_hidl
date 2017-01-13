@@ -108,7 +108,7 @@ status_t AST::generateStubImplHeader(const std::string &outputPath) const {
     out << "#ifndef " << guard << "\n";
     out << "#define " << guard << "\n\n";
 
-    generateCppPackageInclude(out, mPackage, "I" + baseName);
+    generateCppPackageInclude(out, mPackage, iface->localName());
 
     out << "#include <hidl/MQDescriptor.h>\n";
     out << "#include <hidl/Status.h>\n\n";
@@ -149,6 +149,7 @@ status_t AST::generateStubImplHeader(const std::string &outputPath) const {
     }
 
     out << "using ::android::hardware::hidl_array;\n";
+    out << "using ::android::hardware::hidl_memory;\n";
     out << "using ::android::hardware::hidl_string;\n";
     out << "using ::android::hardware::hidl_vec;\n";
     out << "using ::android::hardware::Return;\n";
@@ -242,7 +243,7 @@ status_t AST::generateStubImplSource(const std::string &outputPath) const {
     out.unindent();
     out << "}\n\n";
 
-    out << "} // namespace implementation\n";
+    out << "}  // namespace implementation\n";
     enterLeaveNamespace(out, false /* leave */);
 
     return OK;

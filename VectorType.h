@@ -27,6 +27,10 @@ struct VectorType : public TemplatedType {
 
     bool isVector() const override;
     bool isVectorOfBinders() const;
+    std::string typeName() const override;
+    bool isCompatibleElementType(Type *elementType) const override;
+
+    bool canCheckEquality() const override;
 
     void addNamedTypesToSet(std::set<const FQName> &set) const override;
 

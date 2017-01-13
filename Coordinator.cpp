@@ -189,8 +189,12 @@ std::string Coordinator::getPackageRootPath(const FQName &fqName) const {
     return root;
 }
 
+std::string Coordinator::getPackageRootOption(const FQName &fqName) const {
+    return getPackageRoot(fqName) + ":" + getPackageRootPath(fqName);
+}
+
 std::string Coordinator::getPackagePath(
-        const FQName &fqName, bool relative) const {
+        const FQName &fqName, bool relative, bool sanitized) const {
 
     auto it = findPackageRoot(fqName);
     auto prefix = *it;
@@ -226,7 +230,7 @@ std::string Coordinator::getPackagePath(
     packagePath.append(packageSuffix.substr(startPos));
     packagePath.append("/");
 
-    packagePath.append(fqName.version());
+    packagePath.append(sanitized ? fqName.sanitizedVersion() : fqName.version());
     packagePath.append("/");
 
     return packagePath;

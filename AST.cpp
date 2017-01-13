@@ -22,7 +22,7 @@
 #include "HandleType.h"
 #include "Interface.h"
 #include "Location.h"
-#include "PredefinedType.h"
+#include "FmqType.h"
 #include "Scope.h"
 #include "TypeDef.h"
 
@@ -407,11 +407,6 @@ Type *AST::lookupType(const FQName &fqName) {
                     resolvedName.package(), resolvedName.version(), "types");
 
             mImportedNames.insert(typesName);
-
-            if (resolvedType->isNamedType() && !resolvedType->isTypeDef()) {
-                mImportedNamesForJava.insert(
-                        static_cast<NamedType *>(resolvedType)->fqName());
-            }
         } else {
             // Do _not_ use fqName, i.e. the name we used to look up the type,
             // but instead use the name of the interface we found.
@@ -420,9 +415,6 @@ Type *AST::lookupType(const FQName &fqName) {
             // name of the typedef instead of the proper name of the interface.
 
             mImportedNames.insert(
-                    static_cast<Interface *>(resolvedType)->fqName());
-
-            mImportedNamesForJava.insert(
                     static_cast<Interface *>(resolvedType)->fqName());
         }
     }
@@ -457,6 +449,17 @@ void AST::getImportedPackages(std::set<FQName> *importSet) const {
     }
 }
 
+void AST::getImportedPackagesHierarchy(std::set<FQName> *importSet) const {
+    getImportedPackages(importSet);
+    std::set<FQName> newSet;
+    for (const auto &ast : mImportedASTs) {
+        if (importSet->find(ast->package()) != importSet->end()) {
+            ast->getImportedPackagesHierarchy(&newSet);
+        }
+    }
+    importSet->insert(newSet.begin(), newSet.end());
+}
+
 bool AST::isJavaCompatible() const {
     std::string ifaceName;
     if (!AST::isInterface(&ifaceName)) {
@@ -476,6 +479,11 @@ bool AST::isJavaCompatible() const {
 void AST::appendToExportedTypesVector(
         std::vector<const Type *> *exportedTypes) const {
     mRootScope->appendToExportedTypesVector(exportedTypes);
+}
+
+bool AST::isIBase() const {
+    Interface *iface = mRootScope->getInterface();
+    return iface != nullptr && iface->isIBase();
 }
 
 }  // namespace android;

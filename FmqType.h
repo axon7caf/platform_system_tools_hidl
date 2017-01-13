@@ -14,26 +14,24 @@
  * limitations under the License.
  */
 
-#ifndef GENERIC_BINDER_H_
+#ifndef FMQ_TYPE_H_
 
-#define GENERIC_BINDER_H_
+#define FMQ_TYPE_H_
 
 #include "Type.h"
 
 namespace android {
 
-struct GenericBinder : public Type {
-    GenericBinder();
-
-    bool isBinder() const override;
+struct FmqType : public TemplatedType {
+    FmqType(const char *nsp, const char *name);
 
     void addNamedTypesToSet(std::set<const FQName> &set) const override;
+
+    std::string fullName() const;
 
     std::string getCppType(
             StorageMode mode,
             bool specifyNamespaces) const override;
-
-    std::string getJavaType(bool forInitializer) const override;
 
     void emitReaderWriter(
             Formatter &out,
@@ -43,15 +41,31 @@ struct GenericBinder : public Type {
             bool isReader,
             ErrorMode mode) const override;
 
-    void emitJavaReaderWriter(
+    void emitReaderWriterEmbedded(
             Formatter &out,
+            size_t depth,
+            const std::string &name,
+            const std::string &sanitizedName,
+            bool nameIsPointer,
             const std::string &parcelObj,
-            const std::string &argName,
-            bool isReader) const override;
+            bool parcelObjIsPointer,
+            bool isReader,
+            ErrorMode mode,
+            const std::string &parentName,
+            const std::string &offsetText) const override;
 
-    status_t emitVtsAttributeType(Formatter &out) const override;
+    bool isJavaCompatible() const override;
+
+    bool needsEmbeddedReadWrite() const override;
+    bool resultNeedsDeref() const override;
+    bool isCompatibleElementType(Type *elementType) const override;
+private:
+    std::string mNamespace;
+    std::string mName;
+
+    DISALLOW_COPY_AND_ASSIGN(FmqType);
 };
 
 }  // namespace android
 
-#endif  // GENERIC_BINDER_H_
+#endif  // FMQ_TYPE_H_

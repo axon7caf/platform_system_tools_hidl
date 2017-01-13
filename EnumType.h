@@ -30,7 +30,7 @@ struct EnumValue;
 struct EnumType : public Scope {
     EnumType(const char *localName,
              const Location &location,
-             Type *storageType = NULL);
+             Type *storageType);
 
     const Type *storageType() const;
     const std::vector<EnumValue *> &values() const;
@@ -38,9 +38,12 @@ struct EnumType : public Scope {
 
     LocalIdentifier *lookupIdentifier(const std::string &name) const override;
 
+    bool isElidableType() const override;
     const ScalarType *resolveToScalarType() const override;
 
+    std::string typeName() const override;
     bool isEnum() const override;
+    bool canCheckEquality() const override;
 
     std::string getCppType(StorageMode mode,
                            bool specifyNamespaces) const override;
@@ -92,7 +95,12 @@ private:
 
     void emitEnumBitwiseOperator(
             Formatter &out,
-            bool mutating,
+            bool lhsIsEnum,
+            bool rhsIsEnum,
+            const std::string &op) const;
+
+    void emitBitFieldBitwiseAssignmentOperator(
+            Formatter &out,
             const std::string &op) const;
 
     std::vector<EnumValue *> mValues;
@@ -121,6 +129,55 @@ struct EnumValue : public LocalIdentifier {
     bool mIsAutoFill;
 
     DISALLOW_COPY_AND_ASSIGN(EnumValue);
+};
+
+struct BitFieldType : public TemplatedType {
+
+    std::string typeName() const override;
+
+    bool isBitField() const override;
+
+    void addNamedTypesToSet(std::set<const FQName> &set) const override;
+
+    bool isCompatibleElementType(Type *elementType) const override;
+
+    bool isElidableType() const override;
+
+    const ScalarType *resolveToScalarType() const override;
+
+    std::string getCppType(StorageMode mode,
+                           bool specifyNamespaces) const override;
+
+    std::string getJavaType(bool forInitializer) const override;
+
+    std::string getJavaSuffix() const override;
+
+    std::string getJavaWrapperType() const override;
+
+    std::string getVtsType() const override;
+
+    status_t emitVtsTypeDeclarations(Formatter &out) const override;
+
+    status_t emitVtsAttributeType(Formatter &out) const override;
+
+    void getAlignmentAndSize(size_t *align, size_t *size) const override;
+
+    void emitReaderWriter(
+        Formatter &out,
+        const std::string &name,
+        const std::string &parcelObj,
+        bool parcelObjIsPointer,
+        bool isReader,
+        ErrorMode mode) const override;
+
+    void emitJavaFieldReaderWriter(
+        Formatter &out,
+        size_t depth,
+        const std::string &parcelName,
+        const std::string &blobName,
+        const std::string &fieldName,
+        const std::string &offset,
+        bool isReader) const override;
 };
 
 }  // namespace android

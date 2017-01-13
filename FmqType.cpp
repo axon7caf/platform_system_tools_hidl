@@ -14,31 +14,32 @@
  * limitations under the License.
  */
 
-#include "StringType.h"
+#include "FmqType.h"
 
 #include <hidl-util/Formatter.h>
+#include <android-base/logging.h>
 
 namespace android {
 
-StringType::StringType() {}
+FmqType::FmqType(const char *nsp, const char *name)
+    : mNamespace(nsp), mName(name) {
+}
 
-void StringType::addNamedTypesToSet(std::set<const FQName> &) const {
+void FmqType::addNamedTypesToSet(std::set<const FQName> &) const {
     // do nothing
 }
 
-bool StringType::isString() const {
-    return true;
+std::string FmqType::fullName() const {
+    return mNamespace +
+            (mNamespace.empty() ? "" : "::") +
+            mName + "<" + mElementType->getCppStackType(true) + ">";
 }
 
-bool StringType::canCheckEquality() const {
-    return true;
-}
+std::string FmqType::getCppType(
+        StorageMode mode,
+        bool) const {
 
-std::string StringType::getCppType(StorageMode mode,
-                                   bool specifyNamespaces) const {
-    const std::string base =
-          std::string(specifyNamespaces ? "::android::hardware::" : "")
-        + "hidl_string";
+    const std::string base = fullName();
 
     switch (mode) {
         case StorageMode_Stack:
@@ -52,19 +53,7 @@ std::string StringType::getCppType(StorageMode mode,
     }
 }
 
-std::string StringType::getJavaType(bool /* forInitializer */) const {
-    return "String";
-}
-
-std::string StringType::getJavaSuffix() const {
-    return "String";
-}
-
-std::string StringType::getVtsType() const {
-    return "TYPE_STRING";
-}
-
-void StringType::emitReaderWriter(
+void FmqType::emitReaderWriter(
         Formatter &out,
         const std::string &name,
         const std::string &parcelObj,
@@ -72,6 +61,7 @@ void StringType::emitReaderWriter(
         bool isReader,
         ErrorMode mode) const {
     const std::string parentName = "_hidl_" + name + "_parent";
+
     out << "size_t " << parentName << ";\n\n";
 
     const std::string parcelObjDeref =
@@ -79,7 +69,9 @@ void StringType::emitReaderWriter(
 
     if (isReader) {
         out << name
-            << " = (const ::android::hardware::hidl_string *)"
+            << " = (const "
+            << fullName()
+            << " *)"
             << parcelObjDeref
             << "readBuffer("
             << "&"
@@ -125,11 +117,11 @@ void StringType::emitReaderWriter(
             "0 /* parentOffset */");
 }
 
-void StringType::emitReaderWriterEmbedded(
+void FmqType::emitReaderWriterEmbedded(
         Formatter &out,
         size_t /* depth */,
         const std::string &name,
-        const std::string & /*sanitizedName*/,
+        const std::string & /* sanitizedName */,
         bool nameIsPointer,
         const std::string &parcelObj,
         bool parcelObjIsPointer,
@@ -147,76 +139,25 @@ void StringType::emitReaderWriterEmbedded(
             mode,
             parentName,
             offsetText,
-            "::android::hardware::hidl_string",
+            fullName(),
             "" /* childName */,
-            "::android::hardware");
+            mNamespace);
 }
 
-void StringType::emitJavaFieldInitializer(
-        Formatter &out, const std::string &fieldName) const {
-    out << "String "
-        << fieldName
-        << " = new String();\n";
+bool FmqType::isJavaCompatible() const {
+    return false;
 }
 
-void StringType::emitJavaFieldReaderWriter(
-        Formatter &out,
-        size_t /* depth */,
-        const std::string &parcelName,
-        const std::string &blobName,
-        const std::string &fieldName,
-        const std::string &offset,
-        bool isReader) const {
-    if (isReader) {
-        out << "\n"
-            << parcelName
-            << ".readEmbeddedBuffer(\n";
-
-        out.indent();
-        out.indent();
-
-        out << blobName
-            << ".handle(),\n"
-            << offset
-            << " + 0 /* offsetof(hidl_string, mBuffer) */);\n\n";
-
-        out.unindent();
-        out.unindent();
-
-        out << fieldName
-            << " = "
-            << blobName
-            << ".getString("
-            << offset
-            << ");\n";
-
-        return;
-    }
-
-    out << blobName
-        << ".putString("
-        << offset
-        << ", "
-        << fieldName
-        << ");\n";
-}
-
-bool StringType::needsEmbeddedReadWrite() const {
+bool FmqType::needsEmbeddedReadWrite() const {
     return true;
 }
 
-bool StringType::resultNeedsDeref() const {
+bool FmqType::resultNeedsDeref() const {
     return true;
 }
 
-status_t StringType::emitVtsTypeDeclarations(Formatter &out) const {
-    out << "type: " << getVtsType() << "\n";
-    return OK;
-}
-
-void StringType::getAlignmentAndSize(size_t *align, size_t *size) const {
-    *align = 8;  // hidl_string
-    *size = 16;
+bool FmqType::isCompatibleElementType(Type *elementType) const {
+    return (!elementType->isInterface() && !elementType->needsEmbeddedReadWrite());
 }
 
 }  // namespace android

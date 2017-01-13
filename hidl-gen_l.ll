@@ -34,14 +34,17 @@ VERSION                 {AT}{D}+{DOT}{D}+
 #include "ArrayType.h"
 #include "CompoundType.h"
 #include "ConstantExpression.h"
+#include "DeathRecipientType.h"
 #include "EnumType.h"
 #include "HandleType.h"
+#include "MemoryType.h"
 #include "Method.h"
+#include "PointerType.h"
 #include "ScalarType.h"
 #include "StringType.h"
 #include "VectorType.h"
 #include "RefType.h"
-#include "PredefinedType.h"
+#include "FmqType.h"
 
 #include "hidl-gen_y.h"
 
@@ -92,6 +95,7 @@ int check_type(yyscan_t yyscanner, struct yyguts_t *yyg);
 "struct"		{ return token::STRUCT; }
 "typedef"		{ return token::TYPEDEF; }
 "union"			{ return token::UNION; }
+"bitfield"		{ yylval->templatedType = new BitFieldType; return token::TEMPLATED; }
 "vec"			{ yylval->templatedType = new VectorType; return token::TEMPLATED; }
 "ref"			{ yylval->templatedType = new RefType; return token::TEMPLATED; }
 "oneway"		{ return token::ONEWAY; }
@@ -108,11 +112,14 @@ int check_type(yyscan_t yyscanner, struct yyguts_t *yyg);
 "float"			{ SCALAR_TYPE(KIND_FLOAT); }
 "double"		{ SCALAR_TYPE(KIND_DOUBLE); }
 
+"death_recipient"	{ yylval->type = new DeathRecipientType; return token::TYPE; }
 "handle"		{ yylval->type = new HandleType; return token::TYPE; }
+"memory"		{ yylval->type = new MemoryType; return token::TYPE; }
+"pointer"		{ yylval->type = new PointerType; return token::TYPE; }
 "string"		{ yylval->type = new StringType; return token::TYPE; }
 
-"MQDescriptorSync" { yylval->type = new PredefinedType("::android::hardware", "MQDescriptorSync"); return token::TYPE; }
-"MQDescriptorUnsync" { yylval->type = new PredefinedType("::android::hardware", "MQDescriptorUnsync"); return token::TYPE; }
+"fmq_sync" { yylval->type = new FmqType("::android::hardware", "MQDescriptorSync"); return token::TEMPLATED; }
+"fmq_unsync" { yylval->type = new FmqType("::android::hardware", "MQDescriptorUnsync"); return token::TEMPLATED; }
 
 "("			{ return('('); }
 ")"			{ return(')'); }

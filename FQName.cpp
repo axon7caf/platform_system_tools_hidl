@@ -175,6 +175,14 @@ std::string FQName::version() const {
     return mMajor + "." + mMinor;
 }
 
+std::string FQName::sanitizedVersion() const {
+    CHECK(mMajor.empty() == mMinor.empty());
+    if (mMajor.empty() && mMinor.empty()) {
+        return "";
+    }
+    return "V" + mMajor + "_" + mMinor;
+}
+
 std::string FQName::atVersion() const {
     std::string v = version();
     return v.empty() ? "" : ("@" + v);
@@ -269,12 +277,48 @@ bool FQName::operator==(const FQName &other) const {
     return string() == other.string();
 }
 
-std::string FQName::getInterfaceBaseName() const {
+bool FQName::operator!=(const FQName &other) const {
+    return !(*this == other);
+}
+
+std::string FQName::getInterfaceName() const {
     CHECK(names().size() == 1) << "Must be a top level type";
     CHECK(!mName.empty() && mName[0] == 'I') << mName;
 
+    return mName;
+}
+
+std::string FQName::getInterfaceBaseName() const {
     // cut off the leading 'I'.
-    return mName.substr(1);
+    return getInterfaceName().substr(1);
+}
+
+std::string FQName::getInterfaceHwName() const {
+    return "IHw" + getInterfaceBaseName();
+}
+
+std::string FQName::getInterfaceProxyName() const {
+    return "Bp" + getInterfaceBaseName();
+}
+
+std::string FQName::getInterfaceStubName() const {
+    return "Bn" + getInterfaceBaseName();
+}
+
+std::string FQName::getInterfacePassthroughName() const {
+    return "Bs" + getInterfaceBaseName();
+}
+
+FQName FQName::getInterfaceProxyFqName() const {
+    return FQName(package(), version(), getInterfaceProxyName());
+}
+
+FQName FQName::getInterfaceStubFqName() const {
+    return FQName(package(), version(), getInterfaceStubName());
+}
+
+FQName FQName::getInterfacePassthroughFqName() const {
+    return FQName(package(), version(), getInterfacePassthroughName());
 }
 
 FQName FQName::getTypesForPackage() const {
@@ -295,10 +339,12 @@ std::string FQName::tokenName() const {
     std::vector<std::string> components;
     getPackageAndVersionComponents(&components, true /* cpp_compatible */);
 
-    std::vector<std::string> nameComponents;
-    StringHelper::SplitString(mName, '.', &nameComponents);
+    if (!mName.empty()) {
+        std::vector<std::string> nameComponents;
+        StringHelper::SplitString(mName, '.', &nameComponents);
 
-    components.insert(components.end(), nameComponents.begin(), nameComponents.end());
+        components.insert(components.end(), nameComponents.begin(), nameComponents.end());
+    }
 
     return StringHelper::JoinStrings(components, "_");
 }
@@ -362,13 +408,7 @@ void FQName::getPackageAndVersionComponents(
         return;
     }
 
-    // Form "Vmajor_minor".
-    std::string versionString = "V";
-    versionString.append(getPackageMajorVersion());
-    versionString.append("_");
-    versionString.append(getPackageMinorVersion());
-
-    components->push_back(versionString);
+    components->push_back(sanitizedVersion());
 }
 
 std::string FQName::getPackageMajorVersion() const {

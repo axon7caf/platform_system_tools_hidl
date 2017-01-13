@@ -51,6 +51,8 @@ struct FQName {
     std::string atVersion() const;
     // Return version in the form "1.0" if it is present, otherwise empty string.
     std::string version() const;
+    // Return version in the form "V1_0" if it is present, otherwise empty string.
+    std::string sanitizedVersion() const;
 
     // The next two methods return the name part of the FQName, that is, the
     // part after the version field.  For example:
@@ -96,11 +98,52 @@ struct FQName {
 
     bool operator<(const FQName &other) const;
     bool operator==(const FQName &other) const;
+    bool operator!=(const FQName &other) const;
 
     // Must be called on an interface
-    // ::android::hardware::Foo::V1_0::IBar
+    // android.hardware.foo@1.0::IBar
     // -> Bar
     std::string getInterfaceBaseName() const;
+
+    // Must be called on an interface
+    // android.hardware.foo@1.0::IBar
+    // -> IBar
+    std::string getInterfaceName() const;
+
+    // Must be called on an interface
+    // android.hardware.foo@1.0::IBar
+    // -> IHwBar
+    std::string getInterfaceHwName() const;
+
+    // Must be called on an interface
+    // android.hardware.foo@1.0::IBar
+    // -> BpBar
+    std::string getInterfaceProxyName() const;
+
+    // Must be called on an interface
+    // android.hardware.foo@1.0::IBar
+    // -> BnBar
+    std::string getInterfaceStubName() const;
+
+    // Must be called on an interface
+    // android.hardware.foo@1.0::IBar
+    // -> BsBar
+    std::string getInterfacePassthroughName() const;
+
+    // Must be called on an interface
+    // android.hardware.foo@1.0::IBar
+    // -> android.hardware.foo@1.0::BpBar
+    FQName getInterfaceProxyFqName() const;
+
+    // Must be called on an interface
+    // android.hardware.foo@1.0::IBar
+    // -> android.hardware.foo@1.0::BnBar
+    FQName getInterfaceStubFqName() const;
+
+    // Must be called on an interface
+    // android.hardware.foo@1.0::IBar
+    // -> android.hardware.foo@1.0::BsBar
+    FQName getInterfacePassthroughFqName() const;
 
     // Replace whatever after :: with "types"
     // android.hardware.foo@1.0::Abc.Type:VALUE
@@ -161,6 +204,9 @@ private:
 
     void setVersion(const std::string &v);
 };
+
+static const FQName gIBaseFqName{"android.hidl.base@1.0::IBase"};
+static const FQName gIBasePackageFqName{gIBaseFqName.package(), gIBaseFqName.version(), ""};
 
 }  // namespace android
 

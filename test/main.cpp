@@ -1,19 +1,28 @@
 #define LOG_TAG "hidl_test"
+
+#include "FooCallback.h"
+
 #include <android-base/logging.h>
 
 #include <android/hidl/manager/1.0/IServiceManager.h>
 #include <android/hidl/manager/1.0/IServiceNotification.h>
 
-// TODO(b/32756130): remove
-#include <android/hardware/tests/foo/1.0/BnSimple.h>
+#include <android/hidl/memory/1.0/IAllocator.h>
+#include <android/hidl/memory/1.0/IMemory.h>
+
+#include <android/hidl/token/1.0/ITokenManager.h>
 
 #include <android/hardware/tests/foo/1.0/IFoo.h>
-#include <android/hardware/tests/foo/1.0/IFooCallback.h>
+#include <android/hardware/tests/foo/1.0/BnSimple.h>
+#include <android/hardware/tests/foo/1.0/BsSimple.h>
+#include <android/hardware/tests/foo/1.0/BpSimple.h>
 #include <android/hardware/tests/bar/1.0/IBar.h>
+#include <android/hardware/tests/bar/1.0/IComplicated.h>
 #include <android/hardware/tests/inheritance/1.0/IFetcher.h>
 #include <android/hardware/tests/inheritance/1.0/IGrandparent.h>
 #include <android/hardware/tests/inheritance/1.0/IParent.h>
 #include <android/hardware/tests/inheritance/1.0/IChild.h>
+#include <android/hardware/tests/memory/1.0/IMemoryTest.h>
 #include <android/hardware/tests/pointer/1.0/IGraph.h>
 #include <android/hardware/tests/pointer/1.0/IPointer.h>
 
@@ -35,14 +44,16 @@
 #include <mutex>
 #include <set>
 #include <sstream>
+#include <utility>
 #include <vector>
 
 #include <hidl-test/FooHelper.h>
 #include <hidl-test/PointerHelper.h>
 
 #include <hidl/Status.h>
+#include <hidlmemory/mapping.h>
+
 #include <hwbinder/IPCThreadState.h>
-#include <hwbinder/ProcessState.h>
 
 #include <utils/Condition.h>
 #include <utils/Timers.h>
@@ -73,23 +84,34 @@ using ::android::hardware::tests::foo::V1_0::Abc;
 using ::android::hardware::tests::foo::V1_0::IFoo;
 using ::android::hardware::tests::foo::V1_0::IFooCallback;
 using ::android::hardware::tests::foo::V1_0::ISimple;
+using ::android::hardware::tests::foo::V1_0::implementation::FooCallback;
 using ::android::hardware::tests::bar::V1_0::IBar;
+using ::android::hardware::tests::bar::V1_0::IComplicated;
 using ::android::hardware::tests::inheritance::V1_0::IFetcher;
 using ::android::hardware::tests::inheritance::V1_0::IGrandparent;
 using ::android::hardware::tests::inheritance::V1_0::IParent;
 using ::android::hardware::tests::inheritance::V1_0::IChild;
 using ::android::hardware::tests::pointer::V1_0::IGraph;
 using ::android::hardware::tests::pointer::V1_0::IPointer;
+using ::android::hardware::tests::memory::V1_0::IMemoryTest;
 using ::android::hardware::IPCThreadState;
-using ::android::hardware::ProcessState;
 using ::android::hardware::Return;
 using ::android::hardware::Void;
+using ::android::hardware::configureRpcThreadpool;
+using ::android::hardware::joinRpcThreadpool;
 using ::android::hardware::hidl_array;
-using ::android::hardware::hidl_vec;
+using ::android::hardware::hidl_death_recipient;
+using ::android::hardware::hidl_memory;
 using ::android::hardware::hidl_string;
+using ::android::hardware::hidl_vec;
+using ::android::hidl::base::V1_0::IBase;
 using ::android::hidl::manager::V1_0::IServiceManager;
 using ::android::hidl::manager::V1_0::IServiceNotification;
+using ::android::hidl::memory::V1_0::IAllocator;
+using ::android::hidl::memory::V1_0::IMemory;
+using ::android::hidl::token::V1_0::ITokenManager;
 using ::android::sp;
+using ::android::wp;
 using ::android::to_string;
 using ::android::Mutex;
 using ::android::MultiDimensionalToString;
@@ -102,9 +124,9 @@ using std::to_string;
 
 template <typename T>
 static inline ::testing::AssertionResult isOk(::android::hardware::Return<T> ret) {
-    return ret.getStatus().isOk()
-        ? (::testing::AssertionSuccess() << ret.getStatus())
-        : (::testing::AssertionFailure() << ret.getStatus());
+    return ret.isOk()
+        ? (::testing::AssertionSuccess() << ret.description())
+        : (::testing::AssertionFailure() << ret.description());
 }
 
 template<typename T, typename S>
@@ -143,6 +165,66 @@ struct Simple : public ISimple {
 
     Return<int32_t> getCookie() override {
         return mCookie;
+    }
+
+    Return<void> customVecInt(customVecInt_cb _cb) override {
+        _cb(hidl_vec<int32_t>());
+        return Void();
+    }
+
+    Return<void> customVecStr(customVecStr_cb _cb) override {
+        hidl_vec<hidl_string> vec;
+        vec.resize(2);
+        _cb(vec);
+        return Void();
+    }
+
+    Return<void> mystr(mystr_cb _cb) override {
+        _cb(hidl_string());
+        return Void();
+    }
+
+    Return<void> myhandle(myhandle_cb _cb) override {
+        auto h = native_handle_create(0, 1);
+        _cb(h);
+        native_handle_delete(h);
+        return Void();
+    }
+
+private:
+    int32_t mCookie;
+};
+
+struct Complicated : public IComplicated {
+    Complicated(int32_t cookie)
+        : mCookie(cookie) {
+    }
+
+    Return<int32_t> getCookie() override {
+        return mCookie;
+    }
+
+    Return<void> customVecInt(customVecInt_cb _cb) override {
+        _cb(hidl_vec<int32_t>());
+        return Void();
+    }
+    Return<void> customVecStr(customVecStr_cb _cb) override {
+        hidl_vec<hidl_string> vec;
+        vec.resize(2);
+        _cb(vec);
+        return Void();
+    }
+
+    Return<void> mystr(mystr_cb _cb) override {
+        _cb(hidl_string());
+        return Void();
+    }
+
+    Return<void> myhandle(myhandle_cb _cb) override {
+        auto h = native_handle_create(0, 1);
+        _cb(h);
+        native_handle_delete(h);
+        return Void();
     }
 
 private:
@@ -190,26 +272,30 @@ void signal_handler(int signal)
 }
 
 template <class T>
-static pid_t forkServer(const std::string &serviceName,
-                       const char *tag) {
+static pid_t forkServer(const std::string &serviceName) {
     pid_t pid;
+
     // use fork to create and kill to destroy server processes.
     // getStub = true to get the passthrough version as the backend for the
     // binderized service.
     if ((pid = fork()) == 0) {
         // in child process
+        configureRpcThreadpool(1, true /*callerWillJoin*/);
         sp<T> server = T::getService(serviceName, true);
         gServiceName = serviceName;
         signal(SIGTERM, signal_handler);
-        ALOGD("SERVER(%s) registering %s", tag, serviceName.c_str());
-        server->registerAsService(serviceName);
-        ALOGD("SERVER(%s) starting %s", tag, serviceName.c_str());
-        ProcessState::self()->setThreadPoolMaxThreadCount(0);
-        ProcessState::self()->startThreadPool();
-        IPCThreadState::self()->joinThreadPool();
-        ALOGD("SERVER(%s) %s ends.", tag, serviceName.c_str());
+        ALOGD("SERVER registering %s", serviceName.c_str());
+        ::android::status_t status = server->registerAsService(serviceName);
+        if (status != ::android::OK) {
+            ALOGE("SERVER could not register %s", serviceName.c_str());
+            exit(-1);
+        }
+        ALOGD("SERVER starting %s", serviceName.c_str());
+        joinRpcThreadpool();
+        ALOGD("SERVER %s ends.", serviceName.c_str());
         exit(0);
     }
+
     // in main process
     return pid;
 }
@@ -230,22 +316,27 @@ static void killServer(pid_t pid, const char *serverName) {
 
 class HidlEnvironmentBase : public ::testing::Environment {
 protected:
-    std::vector<pid_t> mPids;
-    const char * const serverNames[6] = {
-        "Child", "Fetcher", "Bar", "FooCallback", "Graph", "Pointer"
-    };
+    std::vector<std::pair<std::string, pid_t>> mPids;
+
 public:
     sp<IServiceManager> manager;
+    sp<ITokenManager> tokenManager;
+    sp<IAllocator> ashmemAllocator;
+    sp<IMemoryTest> memoryTest;
     sp<IFetcher> fetcher;
     sp<IFoo> foo;
+    sp<IFoo> dyingFoo;
     sp<IBar> bar;
-    sp<IFooCallback> fooCb;
     sp<IGraph> graphInterface;
     sp<IPointer> pointerInterface;
     sp<IPointer> validationPointerInterface;
 
-    void getServices() {
+    template <class T>
+    void addServer(const std::string &name) {
+        mPids.push_back({name, forkServer<T>(name)});
+    }
 
+    void getServices() {
         manager = IServiceManager::getService("manager");
 
         // alternatively:
@@ -254,8 +345,20 @@ public:
         ASSERT_NE(manager, nullptr);
         ASSERT_TRUE(manager->isRemote()); // manager is always remote
 
+        tokenManager = ITokenManager::getService("manager");
+        ASSERT_NE(tokenManager, nullptr);
+        ASSERT_TRUE(tokenManager->isRemote()); // tokenManager is always remote
+
+        ashmemAllocator = IAllocator::getService("ashmem");
+        ASSERT_NE(ashmemAllocator, nullptr);
+        ASSERT_TRUE(ashmemAllocator->isRemote()); // allocator is always remote
+
         // getStub is true if we are in passthrough mode to skip checking
         // binderized server, false for binderized mode.
+
+        memoryTest = IMemoryTest::getService("memory", gMode == PASSTHROUGH /* getStub */);
+        ASSERT_NE(memoryTest, nullptr);
+        ASSERT_EQ(memoryTest->isRemote(), gMode == BINDERIZED);
 
         fetcher = IFetcher::getService("fetcher", gMode == PASSTHROUGH /* getStub */);
         ASSERT_NE(fetcher, nullptr);
@@ -265,13 +368,13 @@ public:
         ASSERT_NE(foo, nullptr);
         ASSERT_EQ(foo->isRemote(), gMode == BINDERIZED);
 
+        dyingFoo = IFoo::getService("dyingFoo", gMode == PASSTHROUGH /* getStub */);
+        ASSERT_NE(foo, nullptr);
+        ASSERT_EQ(foo->isRemote(), gMode == BINDERIZED);
+
         bar = IBar::getService("foo", gMode == PASSTHROUGH /* getStub */);
         ASSERT_NE(bar, nullptr);
         ASSERT_EQ(bar->isRemote(), gMode == BINDERIZED);
-
-        fooCb = IFooCallback::getService("foo callback", gMode == PASSTHROUGH /* getStub */);
-        ASSERT_NE(fooCb, nullptr);
-        ASSERT_EQ(fooCb->isRemote(), gMode == BINDERIZED);
 
         graphInterface = IGraph::getService("graph", gMode == PASSTHROUGH /* getStub */);
         ASSERT_NE(graphInterface, nullptr);
@@ -286,13 +389,21 @@ public:
         ASSERT_NE(validationPointerInterface, nullptr);
     }
 
+    void killServer(const char *serverName) {
+        for (const auto &pair : mPids) {
+            if (pair.first == serverName) {
+                ::killServer(pair.second, pair.first.c_str());
+            }
+        }
+    }
+
     virtual void TearDown() {
         // clean up by killing server processes.
         ALOGI("Environment tear-down beginning...");
         ALOGI("Killing servers...");
         size_t i = 0;
-        for (pid_t pid : mPids) {
-            killServer(pid, serverNames[i++]);
+        for (const auto &pair : mPids) {
+            ::killServer(pair.second, pair.first.c_str());
         }
         ALOGI("Servers all killed.");
         ALOGI("Environment tear-down complete.");
@@ -305,7 +416,7 @@ private:
         ALOGI("Environment setup beginning...");
         // starts this even for passthrough mode.
         // this is used in Bar's default implementation
-        mPids.push_back(forkServer<IChild>("child", serverNames[0]));
+        addServer<IChild>("child");
         sleep(1);
         getServices();
         ALOGI("Environment setup complete.");
@@ -318,13 +429,14 @@ public:
         ALOGI("Environment setup beginning...");
 
         size_t i = 0;
-        mPids.push_back(forkServer<IChild>("child", serverNames[i++]));
-        mPids.push_back(forkServer<IParent>("parent", serverNames[i++]));
-        mPids.push_back(forkServer<IFetcher>("fetcher", serverNames[i++]));
-        mPids.push_back(forkServer<IBar>("foo", serverNames[i++]));
-        mPids.push_back(forkServer<IFooCallback>("foo callback", serverNames[i++]));
-        mPids.push_back(forkServer<IGraph>("graph", serverNames[i++]));
-        mPids.push_back(forkServer<IPointer>("pointer", serverNames[i++]));
+        addServer<IMemoryTest>("memory");
+        addServer<IChild>("child");
+        addServer<IParent>("parent");
+        addServer<IFetcher>("fetcher");
+        addServer<IBar>("foo");
+        addServer<IFoo>("dyingFoo");
+        addServer<IGraph>("graph");
+        addServer<IPointer>("pointer");
 
         sleep(1);
         getServices();
@@ -335,13 +447,26 @@ public:
 class HidlTest : public ::testing::Test {
 public:
     sp<IServiceManager> manager;
+    sp<ITokenManager> tokenManager;
+    sp<IAllocator> ashmemAllocator;
+    sp<IMemoryTest> memoryTest;
     sp<IFetcher> fetcher;
     sp<IFoo> foo;
+    sp<IFoo> dyingFoo;
     sp<IBar> bar;
-    sp<IFooCallback> fooCb;
     sp<IGraph> graphInterface;
     sp<IPointer> pointerInterface;
     sp<IPointer> validationPointerInterface;
+
+    void killServer(const char *serverName) {
+        HidlEnvironmentBase *env;
+        if (gMode == BINDERIZED) {
+            env = gBinderizedEnvironment;
+        } else {
+            env = gPassthroughEnvironment;
+        }
+        env->killServer(serverName);
+    }
 
     virtual void SetUp() override {
         ALOGI("Test setup beginning...");
@@ -352,10 +477,13 @@ public:
             env = gPassthroughEnvironment;
         }
         manager = env->manager;
+        tokenManager = env->tokenManager;
+        ashmemAllocator = env->ashmemAllocator;
+        memoryTest = env->memoryTest;
         fetcher = env->fetcher;
         foo = env->foo;
+        dyingFoo = env->dyingFoo;
         bar = env->bar;
-        fooCb = env->fooCb;
         graphInterface = env->graphInterface;
         pointerInterface = env->pointerInterface;
         validationPointerInterface = env->validationPointerInterface;
@@ -368,7 +496,6 @@ TEST_F(HidlTest, ServiceListTest) {
         "android.hardware.tests.pointer@1.0::IPointer/pointer",
         "android.hardware.tests.bar@1.0::IBar/foo",
         "android.hardware.tests.inheritance@1.0::IFetcher/fetcher",
-        "android.hardware.tests.foo@1.0::IFooCallback/foo callback",
         "android.hardware.tests.inheritance@1.0::IParent/parent",
         "android.hardware.tests.inheritance@1.0::IParent/child",
         "android.hardware.tests.inheritance@1.0::IChild/child",
@@ -453,11 +580,8 @@ TEST_F(HidlTest, ServiceNotificationTest) {
         std::string instanceName = "test-instance";
         EXPECT_TRUE(ISimple::registerForNotifications(instanceName, notification));
 
-        ProcessState::self()->setThreadPoolMaxThreadCount(0);
-        ProcessState::self()->startThreadPool();
-
         Simple* instance = new Simple(1);
-        instance->registerAsService(instanceName);
+        EXPECT_EQ(::android::OK, instance->registerAsService(instanceName));
 
         std::unique_lock<std::mutex> lock(notification->mutex);
 
@@ -486,13 +610,10 @@ TEST_F(HidlTest, ServiceAllNotificationTest) {
         std::string instanceTwo = "test-instance-two";
         EXPECT_TRUE(ISimple::registerForNotifications("", notification));
 
-        ProcessState::self()->setThreadPoolMaxThreadCount(0);
-        ProcessState::self()->startThreadPool();
-
         Simple* instanceA = new Simple(1);
-        instanceA->registerAsService(instanceOne);
+        EXPECT_EQ(::android::OK, instanceA->registerAsService(instanceOne));
         Simple* instanceB = new Simple(2);
-        instanceB->registerAsService(instanceTwo);
+        EXPECT_EQ(::android::OK, instanceB->registerAsService(instanceTwo));
 
         std::unique_lock<std::mutex> lock(notification->mutex);
 
@@ -513,6 +634,71 @@ TEST_F(HidlTest, ServiceAllNotificationTest) {
         EXPECT_EQ(to_string(registrations.data(), registrations.size()),
                   "['" + descriptor + "/" + instanceOne + "', '"
                        + descriptor + "/" + instanceTwo + "']");
+    }
+}
+
+TEST_F(HidlTest, TestToken) {
+    Return<uint64_t> ret = tokenManager->createToken(manager);
+    EXPECT_OK(ret);
+    uint64_t token = ret;
+
+    Return<sp<IBase>> retService = tokenManager->get(token);
+    EXPECT_OK(retService);
+    if (retService.isOk()) {
+        sp<IBase> service = retService;
+        EXPECT_NE(nullptr, service.get());
+        sp<IServiceManager> retManager = IServiceManager::castFrom(service);
+
+        // TODO(b/33818800): should have only one Bp per process
+        // EXPECT_EQ(manager, retManager);
+
+        EXPECT_NE(nullptr, retManager.get());
+    }
+
+    Return<bool> unregisterRet = tokenManager->unregister(token);
+
+    EXPECT_OK(unregisterRet);
+    if (unregisterRet.isOk()) {
+        EXPECT_TRUE(ret);
+    }
+}
+
+TEST_F(HidlTest, TestSharedMemory) {
+    const uint8_t kValue = 0xCA;
+    hidl_memory mem_copy;
+    EXPECT_OK(ashmemAllocator->allocate(1024, [&](bool success, const hidl_memory& mem) {
+        EXPECT_EQ(success, true);
+
+        sp<IMemory> memory = mapMemory(mem);
+
+        EXPECT_NE(memory, nullptr);
+
+        uint8_t* data = static_cast<uint8_t*>(static_cast<void*>(memory->getPointer()));
+        EXPECT_NE(data, nullptr);
+
+        EXPECT_EQ(memory->getSize(), mem.size());
+
+        memory->update();
+        memset(data, 0, memory->getSize());
+        memory->commit();
+
+        mem_copy = mem;
+        memoryTest->fillMemory(mem, kValue);
+        for (size_t i = 0; i < mem.size(); i++) {
+            EXPECT_EQ(kValue, data[i]);
+        }
+    }));
+
+    // Test the memory persists after the call
+    sp<IMemory> memory = mapMemory(mem_copy);
+
+    EXPECT_NE(memory, nullptr);
+
+    uint8_t* data = static_cast<uint8_t*>(static_cast<void*>(memory->getPointer()));
+    EXPECT_NE(data, nullptr);
+
+    for (size_t i = 0; i < mem_copy.size(); i++) {
+        EXPECT_EQ(kValue, data[i]);
     }
 }
 
@@ -575,8 +761,47 @@ TEST_F(HidlTest, FooMapThisVectorTest) {
         }));
 }
 
-// TODO: b/31819198
+TEST_F(HidlTest, WrapTest) {
+    using ::android::hardware::tests::foo::V1_0::BnSimple;
+    using ::android::hardware::tests::foo::V1_0::BsSimple;
+    using ::android::hardware::tests::foo::V1_0::BpSimple;
+    using ::android::hardware::HidlInstrumentor;
+    nsecs_t now;
+    int i = 0;
+
+    now = systemTime();
+    new BnSimple(new Simple(1));
+    EXPECT_LT(systemTime() - now, 2000000) << "    for BnSimple(nonnull)";
+
+    now = systemTime();
+    new BnSimple(nullptr);
+    EXPECT_LT(systemTime() - now, 2000000) << "    for BnSimple(null)";
+
+    now = systemTime();
+    new BsSimple(new Simple(1));
+    EXPECT_LT(systemTime() - now, 2000000) << "    for BsSimple(nonnull)";
+
+    now = systemTime();
+    new BsSimple(nullptr);
+    EXPECT_LT(systemTime() - now, 2000000) << "    for BsSimple(null)";
+
+    now = systemTime();
+    new BpSimple(nullptr);
+    EXPECT_LT(systemTime() - now, 2000000) << "    for BpSimple(null)";
+
+    now = systemTime();
+    new ::android::hardware::HidlInstrumentor("");
+    EXPECT_LT(systemTime() - now, 2000000) << "    for HidlInstrumentor";
+
+    now = systemTime();
+    i++;
+    EXPECT_LT(systemTime() - now,    1000) << "    for nothing";
+}
+
 TEST_F(HidlTest, FooCallMeTest) {
+
+    sp<IFooCallback> fooCb = new FooCallback();
+
     ALOGI("CLIENT call callMe.");
     // callMe is oneway, should return instantly.
     nsecs_t now;
@@ -584,10 +809,6 @@ TEST_F(HidlTest, FooCallMeTest) {
     EXPECT_OK(foo->callMe(fooCb));
     EXPECT_LT(systemTime() - now, ONEWAY_TOLERANCE_NS);
     ALOGI("CLIENT callMe returned.");
-}
-
-// TODO: b/31819198
-TEST_F(HidlTest, ForReportResultsTest) {
 
     // Bar::callMe will invoke three methods on FooCallback; one will return
     // right away (even though it is a two-way method); the second one will
@@ -605,21 +826,27 @@ TEST_F(HidlTest, ForReportResultsTest) {
     // verify that eachof them executed, as expected, and took the length of
     // time to execute that we also expect.
 
+    const nsecs_t waitNs =
+        3 * DELAY_NS + TOLERANCE_NS;
     const nsecs_t reportResultsNs =
         2 * DELAY_NS + TOLERANCE_NS;
 
     ALOGI("CLIENT: Waiting for up to %" PRId64 " seconds.",
-          nanoseconds_to_seconds(reportResultsNs));
+          nanoseconds_to_seconds(waitNs));
 
-    fooCb->reportResults(reportResultsNs,
+    fooCb->reportResults(waitNs,
                 [&](int64_t timeLeftNs,
                     const hidl_array<IFooCallback::InvokeInfo, 3> &invokeResults) {
         ALOGI("CLIENT: FooCallback::reportResults() is returning data.");
         ALOGI("CLIENT: Waited for %" PRId64 " milliseconds.",
-              nanoseconds_to_milliseconds(reportResultsNs - timeLeftNs));
+              nanoseconds_to_milliseconds(waitNs - timeLeftNs));
 
-        EXPECT_LE(0, timeLeftNs);
-        EXPECT_LE(timeLeftNs, reportResultsNs);
+        EXPECT_LE(waitNs - timeLeftNs, reportResultsNs)
+                << "waited for "
+                << (timeLeftNs >= 0 ? "" : "more than ")
+                << (timeLeftNs >= 0 ? (waitNs - timeLeftNs) : waitNs)
+                << "ns, expect to finish in "
+                << reportResultsNs << " ns";
 
         // two-way method, was supposed to return right away
         EXPECT_TRUE(invokeResults[0].invoked);
@@ -920,24 +1147,30 @@ TEST_F(HidlTest, FooHaveAVectorOfInterfacesTest) {
 }
 
 TEST_F(HidlTest, FooHaveAVectorOfGenericInterfacesTest) {
-    using ::android::hardware::tests::foo::V1_0::IHwSimple;
-    using ::android::hardware::tests::foo::V1_0::BnSimple;
 
-    hidl_vec<sp<android::hardware::IBinder> > in;
+    hidl_vec<sp<::android::hidl::base::V1_0::IBase> > in;
     in.resize(16);
     for (size_t i = 0; i < in.size(); ++i) {
-        sp<BnSimple> simpleStub = new BnSimple(new Simple(i));
-        in[i] = IHwSimple::asBinder(simpleStub);
+        sp<ISimple> s = new Simple(i);
+        in[i] = s;
     }
 
     EXPECT_OK(foo->haveAVectorOfGenericInterfaces(
                 in,
                 [&](const auto &out) {
                     EXPECT_EQ(in.size(), out.size());
-                    for (size_t i = 0; i < in.size(); ++i) {
-                        sp<ISimple> inSimple = IHwSimple::asInterface(in[i]);
-                        sp<ISimple> outSimple = IHwSimple::asInterface(out[i]);
 
+                    EXPECT_OK(out[0]->interfaceChain([](const auto &names) {
+                        ASSERT_GT(names.size(), 0u);
+                        ASSERT_STREQ(names[0].c_str(), ISimple::descriptor);
+                    }));
+                    for (size_t i = 0; i < in.size(); ++i) {
+                        sp<ISimple> inSimple = ISimple::castFrom(in[i]);
+                        sp<ISimple> outSimple = ISimple::castFrom(out[i]);
+
+                        ASSERT_NE(inSimple.get(), nullptr);
+                        ASSERT_NE(outSimple.get(), nullptr);
+                        EXPECT_EQ(in[i], inSimple.get()); // pointers must be equal!
                         int32_t inCookie = inSimple->getCookie();
                         int32_t outCookie = outSimple->getCookie();
                         EXPECT_EQ(inCookie, outCookie);
@@ -973,6 +1206,61 @@ TEST_F(HidlTest, FooHandleVecTest) {
     EXPECT_OK(foo->closeHandles());
 }
 
+struct HidlDeathRecipient : hidl_death_recipient {
+    std::mutex mutex;
+    std::condition_variable condition;
+    wp<IBase> who;
+    bool fired = false;
+    uint64_t cookie = 0;
+
+    virtual void serviceDied(uint64_t cookie, const wp<IBase>& who) {
+        std::unique_lock<std::mutex> lock(mutex);
+        fired = true;
+        this->cookie = cookie;
+        this->who = who;
+        condition.notify_one();
+    };
+};
+
+TEST_F(HidlTest, DeathRecipientTest) {
+    sp<HidlDeathRecipient> recipient = new HidlDeathRecipient();
+    sp<HidlDeathRecipient> recipient2 = new HidlDeathRecipient();
+
+    EXPECT_TRUE(dyingFoo->linkToDeath(recipient, 0x1481));
+    EXPECT_TRUE(dyingFoo->linkToDeath(recipient2, 0x2592));
+    EXPECT_TRUE(dyingFoo->unlinkToDeath(recipient2));
+
+    if (gMode != BINDERIZED) {
+        // Passthrough doesn't fire, nor does it keep state of
+        // registered death recipients (so it won't fail unlinking
+        // the same recipient twice).
+        return;
+    }
+
+    EXPECT_FALSE(dyingFoo->unlinkToDeath(recipient2));
+    killServer("dyingFoo");
+
+    std::unique_lock<std::mutex> lock(recipient->mutex);
+    recipient->condition.wait_for(lock, std::chrono::milliseconds(1000), [&recipient]() {
+            return recipient->fired;
+    });
+    EXPECT_TRUE(recipient->fired);
+    EXPECT_EQ(recipient->cookie, 0x1481u);
+    EXPECT_EQ(recipient->who, dyingFoo);
+    std::unique_lock<std::mutex> lock2(recipient2->mutex);
+    recipient2->condition.wait_for(lock2, std::chrono::milliseconds(1000), [&recipient2]() {
+            return recipient2->fired;
+    });
+    EXPECT_FALSE(recipient2->fired);
+
+    // Verify servicemanager dropped its reference too
+    sp<IFoo> deadFoo = IFoo::getService("dyingFoo", false);
+    if (deadFoo != nullptr) {
+        // Got a passthrough
+        EXPECT_FALSE(deadFoo->isRemote());
+    }
+}
+
 TEST_F(HidlTest, BarThisIsNewTest) {
     // Now the tricky part, get access to the derived interface.
     ALOGI("CLIENT call thisIsNew.");
@@ -1002,40 +1290,55 @@ static void expectGoodGrandparent(const sp<IGrandparent> &grandparent) {
     expectGoodParent(parent);
 }
 
+TEST_F(HidlTest, FooHaveAnInterfaceTest) {
+
+    sp<ISimple> in = new Complicated(42);
+    Return<sp<ISimple>> ret = bar->haveAInterface(in);
+    EXPECT_OK(ret);
+    sp<ISimple> out = ret;
+    ASSERT_NE(out.get(), nullptr);
+    EXPECT_EQ(out->getCookie(), 42);
+    EXPECT_OK(out->customVecInt([&](const auto &) { }));
+    EXPECT_OK(out->customVecStr([&](const auto &) { }));
+    EXPECT_OK(out->interfaceChain([&](const auto &) { }));
+    EXPECT_OK(out->mystr([&](const auto &) { }));
+    EXPECT_OK(out->myhandle([&](const auto &) { }));
+}
+
 TEST_F(HidlTest, InheritRemoteGrandparentTest) {
-    EXPECT_OK(fetcher->getGrandparent(true, [&](const sp<IGrandparent>& grandparent) {
-        expectGoodGrandparent(grandparent);
-    }));
+    Return<sp<IGrandparent>> ret = fetcher->getGrandparent(true);
+    EXPECT_OK(ret);
+    expectGoodGrandparent(ret);
 }
 
 TEST_F(HidlTest, InheritLocalGrandparentTest) {
-    EXPECT_OK(fetcher->getGrandparent(false, [&](const sp<IGrandparent>& grandparent) {
-        expectGoodGrandparent(grandparent);
-    }));
+    Return<sp<IGrandparent>> ret = fetcher->getGrandparent(false);
+    EXPECT_OK(ret);
+    expectGoodGrandparent(ret);
 }
 
-TEST_F(HidlTest, BarRemoteParentTest) {
-    EXPECT_OK(fetcher->getParent(true, [&](const sp<IParent>& parent) {
-        expectGoodParent(parent);
-    }));
+TEST_F(HidlTest, InheritRemoteParentTest) {
+    Return<sp<IParent>> ret = fetcher->getParent(true);
+    EXPECT_OK(ret);
+    expectGoodParent(ret);
 }
 
-TEST_F(HidlTest, BarLocalParentTest) {
-    EXPECT_OK(fetcher->getParent(false, [&](const sp<IParent>& parent) {
-        expectGoodParent(parent);
-    }));
+TEST_F(HidlTest, InheritLocalParentTest) {
+    Return<sp<IParent>> ret = fetcher->getParent(false);
+    EXPECT_OK(ret);
+    expectGoodParent(ret);
 }
 
 TEST_F(HidlTest, InheritRemoteChildTest) {
-    EXPECT_OK(fetcher->getChild(true, [&](const sp<IChild>& child) {
-        expectGoodChild(child);
-    }));
+    Return<sp<IChild>> ret = fetcher->getChild(true);
+    EXPECT_OK(ret);
+    expectGoodChild(ret);
 }
 
 TEST_F(HidlTest, InheritLocalChildTest) {
-    EXPECT_OK(fetcher->getChild(false, [&](const sp<IChild>& child) {
-        expectGoodChild(child);
-    }));
+    Return<sp<IChild>> ret = fetcher->getChild(false);
+    EXPECT_OK(ret);
+    expectGoodChild(ret);
 }
 
 TEST_F(HidlTest, TestArrayDimensionality) {
@@ -1046,6 +1349,48 @@ TEST_F(HidlTest, TestArrayDimensionality) {
     EXPECT_EQ(oneDim.size(), 2u);
     EXPECT_EQ(twoDim.size(), std::make_tuple(2u, 3u));
     EXPECT_EQ(threeDim.size(), std::make_tuple(2u, 3u, 4u));
+}
+
+TEST_F(HidlTest, StructEqualTest) {
+    using G = IFoo::Goober;
+    using F = IFoo::Fumble;
+    G g1{
+        .q = 42,
+        .name = "The Ultimate Question of Life, the Universe, and Everything",
+        .address = "North Pole",
+        .numbers = std::array<double, 10>{ {1, 2, 3, 4, 5, 6, 7, 8, 9, 10} },
+        .fumble = F{.data = {.data = 50}},
+        .gumble = F{.data = {.data = 60}}
+    };
+    G g2{
+        .q = 42,
+        .name = "The Ultimate Question of Life, the Universe, and Everything",
+        .address = "North Pole",
+        .numbers = std::array<double, 10>{ {1, 2, 3, 4, 5, 6, 7, 8, 9, 10} },
+        .fumble = F{.data = {.data = 50}},
+        .gumble = F{.data = {.data = 60}}
+    };
+    G g3{
+        .q = 42,
+        .name = "The Ultimate Question of Life, the Universe, and Everything",
+        .address = "North Pole",
+        .numbers = std::array<double, 10>{ {1, 2, 3, 4, 5, 6, 7, 8, 9, 10} },
+        .fumble = F{.data = {.data = 50}},
+        .gumble = F{.data = {.data = 61}}
+    };
+    // explicitly invoke operator== here.
+    EXPECT_TRUE(g1 == g2);
+    EXPECT_TRUE(g1 != g3);
+}
+
+TEST_F(HidlTest, EnumEqualTest) {
+    using E = IFoo::SomeEnum;
+    E e1 = E::quux;
+    E e2 = E::quux;
+    E e3 = E::goober;
+    // explicitly invoke operator== here.
+    EXPECT_TRUE(e1 == e2);
+    EXPECT_TRUE(e1 != e3);
 }
 
 #if HIDL_RUN_POINTER_TESTS

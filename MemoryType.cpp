@@ -14,32 +14,24 @@
  * limitations under the License.
  */
 
-#include "PredefinedType.h"
+#include "MemoryType.h"
 
 #include <hidl-util/Formatter.h>
 #include <android-base/logging.h>
 
 namespace android {
 
-PredefinedType::PredefinedType(const char *nsp, const char *name)
-    : mNamespace(nsp), mName(name) {
-}
+MemoryType::MemoryType() {}
 
-void PredefinedType::addNamedTypesToSet(std::set<const FQName> &) const {
+void MemoryType::addNamedTypesToSet(std::set<const FQName> &) const {
     // do nothing
 }
 
-std::string PredefinedType::fullName() const {
-    return mNamespace +
-            (mNamespace.empty() ? "" : "::") +
-            mName;
-}
-
-std::string PredefinedType::getCppType(
-        StorageMode mode,
-        bool) const {
-
-    const std::string base = fullName();
+std::string MemoryType::getCppType(StorageMode mode,
+                                   bool specifyNamespaces) const {
+    const std::string base =
+          std::string(specifyNamespaces ? "::android::hardware::" : "")
+        + "hidl_memory";
 
     switch (mode) {
         case StorageMode_Stack:
@@ -53,7 +45,11 @@ std::string PredefinedType::getCppType(
     }
 }
 
-void PredefinedType::emitReaderWriter(
+std::string MemoryType::getVtsType() const {
+    return "TYPE_HIDL_MEMORY";
+}
+
+void MemoryType::emitReaderWriter(
         Formatter &out,
         const std::string &name,
         const std::string &parcelObj,
@@ -61,7 +57,6 @@ void PredefinedType::emitReaderWriter(
         bool isReader,
         ErrorMode mode) const {
     const std::string parentName = "_hidl_" + name + "_parent";
-
     out << "size_t " << parentName << ";\n\n";
 
     const std::string parcelObjDeref =
@@ -69,9 +64,7 @@ void PredefinedType::emitReaderWriter(
 
     if (isReader) {
         out << name
-            << " = (const "
-            << fullName()
-            << " *)"
+            << " = (const ::android::hardware::hidl_memory *)"
             << parcelObjDeref
             << "readBuffer("
             << "&"
@@ -117,11 +110,11 @@ void PredefinedType::emitReaderWriter(
             "0 /* parentOffset */");
 }
 
-void PredefinedType::emitReaderWriterEmbedded(
+void MemoryType::emitReaderWriterEmbedded(
         Formatter &out,
         size_t /* depth */,
         const std::string &name,
-        const std::string & /* sanitizedName */,
+        const std::string & /*sanitizedName*/,
         bool nameIsPointer,
         const std::string &parcelObj,
         bool parcelObjIsPointer,
@@ -139,21 +132,30 @@ void PredefinedType::emitReaderWriterEmbedded(
             mode,
             parentName,
             offsetText,
-            fullName(),
+            "::android::hardware::hidl_memory",
             "" /* childName */,
-            mNamespace);
+            "::android::hardware");
 }
 
-bool PredefinedType::isJavaCompatible() const {
+bool MemoryType::needsEmbeddedReadWrite() const {
+    return true;
+}
+
+bool MemoryType::resultNeedsDeref() const {
+    return true;
+}
+
+bool MemoryType::isJavaCompatible() const {
     return false;
 }
 
-bool PredefinedType::needsEmbeddedReadWrite() const {
-    return true;
+void MemoryType::getAlignmentAndSize(size_t *align, size_t *size) const {
+    *align = *size = 8;
 }
 
-bool PredefinedType::resultNeedsDeref() const {
-    return true;
+status_t MemoryType::emitVtsTypeDeclarations(Formatter &out) const {
+    out << "type: " << getVtsType() << "\n";
+    return OK;
 }
 
 }  // namespace android

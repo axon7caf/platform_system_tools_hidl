@@ -71,18 +71,34 @@ const std::vector<Annotation *> &Method::annotations() const {
     return *mAnnotations;
 }
 
-void Method::cppImpl(Formatter &out) const {
+void Method::cppImpl(MethodImplType type, Formatter &out) const {
     CHECK(mIsHidlReserved);
-    if (mCppImpl) {
-        mCppImpl(out);
+    auto it = mCppImpl.find(type);
+    if (it != mCppImpl.end()) {
+        if (it->second != nullptr) {
+            it->second(out);
+        }
     }
 }
 
-void Method::javaImpl(Formatter &out) const {
+void Method::javaImpl(MethodImplType type, Formatter &out) const {
     CHECK(mIsHidlReserved);
-    if (mJavaImpl) {
-        mJavaImpl(out);
+    auto it = mJavaImpl.find(type);
+    if (it != mJavaImpl.end()) {
+        if (it->second != nullptr) {
+            it->second(out);
+        }
     }
+}
+
+bool Method::overridesCppImpl(MethodImplType type) const {
+    CHECK(mIsHidlReserved);
+    return mCppImpl.find(type) != mCppImpl.end();
+}
+
+bool Method::overridesJavaImpl(MethodImplType type) const {
+    CHECK(mIsHidlReserved);
+    return mJavaImpl.find(type) != mJavaImpl.end();
 }
 
 void Method::setSerialId(size_t serial) {
@@ -202,17 +218,14 @@ bool Method::isJavaCompatible() const {
 }
 
 const TypedVar* Method::canElideCallback() const {
-    auto &res = results();
-
     // Can't elide callback for void or tuple-returning methods
-    if (res.size() != 1) {
+    if (mResults->size() != 1) {
         return nullptr;
     }
 
-    const TypedVar *typedVar = res.at(0);
+    const TypedVar *typedVar = mResults->at(0);
 
-    // We only elide callbacks for methods returning a single scalar.
-    if (typedVar->type().resolveToScalarType() != nullptr) {
+    if (typedVar->type().isElidableType()) {
         return typedVar;
     }
 
@@ -236,6 +249,15 @@ const Type &TypedVar::type() const {
 
 bool TypedVar::isJavaCompatible() const {
     return mType->isJavaCompatible();
+}
+
+////////////////////////////////////////////////////////////////////////////////
+bool TypedVarVector::add(TypedVar *v) {
+    if (mNames.emplace(v->name()).second) {
+        push_back(v);
+        return true;
+    }
+    return false;
 }
 
 }  // namespace android

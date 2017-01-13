@@ -17,7 +17,9 @@
 #include "Interface.h"
 
 #include "Annotation.h"
+#include "DeathRecipientType.h"
 #include "Method.h"
+#include "ScalarType.h"
 #include "StringType.h"
 #include "VectorType.h"
 
@@ -46,6 +48,8 @@ enum {
     FIRST_HIDL_TRANSACTION  = 0x00f00000,
     HIDL_DESCRIPTOR_CHAIN_TRANSACTION = FIRST_HIDL_TRANSACTION,
     HIDL_SYSPROPS_CHANGED_TRANSACTION,
+    HIDL_LINK_TO_DEATH_TRANSACTION,
+    HIDL_UNLINK_TO_DEATH_TRANSACTION,
     LAST_HIDL_TRANSACTION   = 0x00ffffff,
 };
 
@@ -55,8 +59,115 @@ Interface::Interface(const char *localName, const Location &location, Interface 
       mIsJavaCompatibleInProgress(false) {
     mReservedMethods.push_back(createDescriptorChainMethod());
     mReservedMethods.push_back(createSyspropsChangedMethod());
+    mReservedMethods.push_back(createLinkToDeathMethod());
+    mReservedMethods.push_back(createUnlinkToDeathMethod());
 }
 
+std::string Interface::typeName() const {
+    return "interface " + localName();
+}
+
+Method *Interface::createLinkToDeathMethod() const {
+    auto *results = new std::vector<TypedVar *> {
+        new TypedVar("success", new ScalarType(ScalarType::KIND_BOOL)) };
+    auto *args = new std::vector<TypedVar *> {
+        new TypedVar("recipient", new DeathRecipientType()),
+        new TypedVar("cookie", new ScalarType(ScalarType::KIND_UINT64)) };
+
+    return new Method("linkToDeath",
+            args,
+            results,
+            false /*oneway */,
+            new std::vector<Annotation *>(),
+            HIDL_LINK_TO_DEATH_TRANSACTION,
+            {
+                {IMPL_HEADER,
+                    [](auto &out) {
+                        out << "(void)cookie;\n"
+                            << "return (recipient != nullptr);\n";
+                    }
+                },
+                {IMPL_PROXY,
+                    [](auto &out) {
+                        out << "::android::hardware::ProcessState::self()->startThreadPool();\n";
+                        out << "::android::hardware::hidl_binder_death_recipient *binder_recipient"
+                            << " = new ::android::hardware::hidl_binder_death_recipient(recipient, cookie, this);\n"
+                            << "std::unique_lock<std::mutex> lock(_hidl_mMutex);\n"
+                            << "_hidl_mDeathRecipients.push_back(binder_recipient);\n"
+                            << "return (remote()->linkToDeath(binder_recipient)"
+                            << " == ::android::OK);\n";
+                    }
+                },
+                {IMPL_STUB, nullptr}
+            }, /*cppImpl*/
+            {
+                {IMPL_HEADER,
+                    [this](auto &out) {
+                        out << "return true;";
+                    }
+                },
+                {IMPL_PROXY,
+                    [this](auto &out) {
+                        out << "return mRemote.linkToDeath(recipient, cookie);\n";
+                    }
+                },
+                {IMPL_STUB, nullptr}
+            } /*javaImpl*/
+    );
+}
+
+Method *Interface::createUnlinkToDeathMethod() const {
+    auto *results = new std::vector<TypedVar *> {
+        new TypedVar("success", new ScalarType(ScalarType::KIND_BOOL)) };
+    auto *args = new std::vector<TypedVar *> {
+        new TypedVar("recipient", new DeathRecipientType()) };
+
+    return new Method("unlinkToDeath",
+            args,
+            results,
+            false /*oneway */,
+            new std::vector<Annotation *>(),
+            HIDL_UNLINK_TO_DEATH_TRANSACTION,
+            {
+                {IMPL_HEADER,
+                    [](auto &out) {
+                        out << "return (recipient != nullptr);\n";
+                    }
+                },
+                {IMPL_PROXY,
+                    [](auto &out) {
+                        out << "std::unique_lock<std::mutex> lock(_hidl_mMutex);\n"
+                            << "for (auto it = _hidl_mDeathRecipients.begin();"
+                            << "it != _hidl_mDeathRecipients.end();"
+                            << "++it) {\n";
+                        out.indent([&] {
+                            out.sIf("(*it)->getRecipient() == recipient", [&] {
+                                out << "::android::status_t status = remote()->unlinkToDeath(*it);\n"
+                                    << "_hidl_mDeathRecipients.erase(it);\n"
+                                    << "return status == ::android::OK;\n";
+                                });
+                            });
+                        out << "}\n";
+                        out << "return false;\n";
+                    }
+                },
+                {IMPL_STUB, nullptr /* don't generate code */}
+            }, /*cppImpl*/
+            {
+                {IMPL_HEADER,
+                    [this](auto &out) {
+                        out << "return true;\n";
+                    }
+                },
+                {IMPL_PROXY,
+                    [this](auto &out) {
+                        out << "return mRemote.unlinkToDeath(recipient);\n";
+                    }
+                },
+                {IMPL_STUB, nullptr /* don't generate code */}
+            } /*javaImpl*/
+    );
+}
 Method *Interface::createSyspropsChangedMethod() const {
     return new Method("notifySyspropsChanged",
             new std::vector<TypedVar *>() /*args */,
@@ -64,13 +175,13 @@ Method *Interface::createSyspropsChangedMethod() const {
             true /*oneway */,
             new std::vector<Annotation *>(),
             HIDL_SYSPROPS_CHANGED_TRANSACTION,
-            [this](auto &out) { /*cppImpl */
+            { { IMPL_HEADER, [this](auto &out) {
                 out << "::android::report_sysprop_change();\n";
                 out << "return ::android::hardware::Void();";
-            },
-            [this](auto &out) { /* javaImpl */
+            } } }, /*cppImpl */
+            { { IMPL_HEADER, [](auto &out) { /* javaImpl */
                 out << "android.os.SystemProperties.reportSyspropChanged();";
-            }
+            } } } /*javaImpl */
     );
 }
 
@@ -86,19 +197,18 @@ Method *Interface::createDescriptorChainMethod() const {
         false /* oneway */,
         new std::vector<Annotation *>(),
         HIDL_DESCRIPTOR_CHAIN_TRANSACTION,
-        [this](auto &out) { /* cppImpl */
+        { { IMPL_HEADER, [this](auto &out) {
             std::vector<const Interface *> chain = typeChain();
-            out << "::android::hardware::hidl_vec<::android::hardware::hidl_string> _hidl_return;\n";
-            out << "_hidl_return.resize(" << chain.size() << ");\n";
-            for (size_t i = 0; i < chain.size(); ++i) {
-                out << "_hidl_return[" << i << "] = "
-                    << chain[i]->fullName()
-                    << "::descriptor;\n";
-            }
-            out << "_hidl_cb(_hidl_return);\n";
+            out << "_hidl_cb(";
+            out.block([&] {
+                for (const Interface *iface : chain) {
+                    out << iface->fullName() << "::descriptor,\n";
+                }
+            });
+            out << ");\n";
             out << "return ::android::hardware::Void();";
-        },
-        [this](auto &out) { /* javaImpl */
+        } } }, /* cppImpl */
+        { { IMPL_HEADER, [this](auto &out) {
             std::vector<const Interface *> chain = typeChain();
             out << "return new java.util.ArrayList<String>(java.util.Arrays.asList(\n";
             out.indent(); out.indent();
@@ -109,11 +219,17 @@ Method *Interface::createDescriptorChainMethod() const {
             }
             out << "));";
             out.unindent(); out.unindent();
-        });
+         } } } /* javaImpl */
+    );
 }
 
 
 bool Interface::addMethod(Method *method) {
+    if (isIBase()) {
+        // ignore addMethod requests for IBase; they are all HIDL reserved methods.
+        return true;
+    }
+
     CHECK(!method->isHidlReserved());
     if (lookupMethod(method->name()) != nullptr) {
         LOG(ERROR) << "Redefinition of method " << method->name();
@@ -156,6 +272,10 @@ std::vector<const Interface *> Interface::superTypeChain() const {
     return superType()->typeChain(); // should work even if superType is nullptr
 }
 
+bool Interface::isElidableType() const {
+    return true;
+}
+
 bool Interface::isInterface() const {
     return true;
 }
@@ -188,7 +308,9 @@ std::vector<InterfaceAndMethod> Interface::allMethodsFromRoot() const {
         }
     }
     for (Method *reservedMethod : hidlReservedMethods()) {
-        v.push_back(InterfaceAndMethod(this, reservedMethod));
+        v.push_back(InterfaceAndMethod(
+                *chain.rbegin(), // IBase
+                reservedMethod));
     }
     return v;
 }
@@ -208,22 +330,33 @@ std::string Interface::getBaseName() const {
     return fqName().getInterfaceBaseName();
 }
 
-FQName Interface::getHwName() const {
-    return FQName(fqName().package(), fqName().version(), "IHw" + getBaseName());
+std::string Interface::getProxyName() const {
+    return fqName().getInterfaceProxyName();
 }
 
-FQName Interface::getProxyName() const {
-    return FQName(fqName().package(), fqName().version(), "Bp" + getBaseName());
+std::string Interface::getStubName() const {
+    return fqName().getInterfaceStubName();
 }
 
-FQName Interface::getStubName() const {
-    return FQName(fqName().package(), fqName().version(), "Bn" + getBaseName());
+std::string Interface::getHwName() const {
+    return fqName().getInterfaceHwName();
 }
 
-FQName Interface::getPassthroughName() const {
-    return FQName(fqName().package(), fqName().version(), "Bs" + getBaseName());
+std::string Interface::getPassthroughName() const {
+    return fqName().getInterfacePassthroughName();
 }
 
+FQName Interface::getProxyFqName() const {
+    return fqName().getInterfaceProxyFqName();
+}
+
+FQName Interface::getStubFqName() const {
+    return fqName().getInterfaceStubFqName();
+}
+
+FQName Interface::getPassthroughFqName() const {
+    return fqName().getInterfacePassthroughFqName();
+}
 
 std::string Interface::getCppType(StorageMode mode,
                                   bool specifyNamespaces) const {
@@ -284,10 +417,13 @@ void Interface::emitReaderWriter(
 
         out << name
             << " = "
-            << fqName().cppNamespace()
-            << "::IHw"
-            << getBaseName()
-            << "::asInterface("
+            << "::android::hardware::fromBinder<"
+            << fqName().cppName()
+            << ","
+            << getProxyFqName().cppName()
+            << ","
+            << getStubFqName().cppName()
+            << ">("
             << binderName
             << ");\n";
 
@@ -304,26 +440,22 @@ void Interface::emitReaderWriter(
         out.indent();
         out << "::android::sp<::android::hardware::IBinder> _hidl_binder = "
             << "::android::hardware::toBinder<\n";
-        out.indentBlock(2, [&] {
-            out << fqName().cppNamespace()
-                << "::I"
-                << getBaseName()
+        out.indent(2, [&] {
+            out << fqName().cppName()
                 << ", "
-                << fqName().cppNamespace()
-                << "::IHw"
-                << getBaseName()
+                << getProxyFqName().cppName()
                 << ">("
                 << name
                 << ");\n";
         });
         out << "if (_hidl_binder.get() != nullptr) {\n";
-        out.indentBlock([&] {
+        out.indent([&] {
             out << "_hidl_err = "
                 << parcelObjDeref
                 << "writeStrongBinder(_hidl_binder);\n";
         });
         out << "} else {\n";
-        out.indentBlock([&] {
+        out.indent([&] {
             out << "_hidl_err = ::android::UNKNOWN_ERROR;\n";
         });
         out << "}\n";

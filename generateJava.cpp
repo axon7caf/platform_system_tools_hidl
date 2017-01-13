@@ -30,15 +30,19 @@ void AST::emitJavaReaderWriter(
         Formatter &out,
         const std::string &parcelObj,
         const TypedVar *arg,
-        bool isReader) const {
+        bool isReader,
+        bool addPrefixToName) const {
     if (isReader) {
         out << arg->type().getJavaType()
             << " "
+            << (addPrefixToName ? "_hidl_out_" : "")
             << arg->name()
             << " = ";
     }
 
-    arg->type().emitJavaReaderWriter(out, parcelObj, arg->name(), isReader);
+    arg->type().emitJavaReaderWriter(out, parcelObj,
+            (addPrefixToName ? "_hidl_out_" : "") + arg->name(),
+            isReader);
 }
 
 status_t AST::generateJavaTypes(
@@ -58,7 +62,8 @@ status_t AST::generateJavaTypes(
 
         std::string path = outputPath;
         path.append(mCoordinator->convertPackageRootToPath(mPackage));
-        path.append(mCoordinator->getPackagePath(mPackage, true /* relative */));
+        path.append(mCoordinator->getPackagePath(mPackage, true /* relative */,
+                true /* sanitized */));
         path.append(typeName);
         path.append(".java");
 
@@ -77,9 +82,6 @@ status_t AST::generateJavaTypes(
 
         out << "package " << mPackage.javaPackage() << ";\n\n";
 
-        for (const auto &item : mImportedNamesForJava) {
-            out << "import " << item.javaName() << ";\n";
-        }
         out << "\n";
 
         status_t err =
@@ -117,7 +119,8 @@ status_t AST::generateJava(
 
     std::string path = outputPath;
     path.append(mCoordinator->convertPackageRootToPath(mPackage));
-    path.append(mCoordinator->getPackagePath(mPackage, true /* relative */));
+    path.append(mCoordinator->getPackagePath(mPackage, true /* relative */,
+            true /* sanitized */));
     path.append(ifaceName);
     path.append(".java");
 
@@ -136,13 +139,7 @@ status_t AST::generateJava(
 
     out << "package " << mPackage.javaPackage() << ";\n\n";
 
-    for (const auto &item : mImportedNamesForJava) {
-        out << "import " << item.javaName() << ";\n";
-    }
-
-    if (!mImportedNamesForJava.empty()) {
-        out << "\n";
-    }
+    out << "import android.os.RemoteException;\n\n";
 
     out.setNamespace(mPackage.javaPackage() + ".");
 
@@ -198,11 +195,11 @@ status_t AST::generateJava(
     out.unindent();
     out << "}\n\n";
 
-    out << "public android.os.IHwBinder asBinder();\n\n";
+    out << "@Override\npublic android.os.IHwBinder asBinder();\n\n";
 
     out << "public static "
         << ifaceName
-        << " getService(String serviceName) {\n";
+        << " getService(String serviceName) throws RemoteException {\n";
 
     out.indent();
 
@@ -227,13 +224,13 @@ status_t AST::generateJava(
         const bool needsCallback = method->results().size() > 1;
 
         if (needsCallback) {
-            out << "\npublic abstract class "
+            out << "\npublic interface "
                 << method->name()
                 << "Callback {\n";
 
             out.indent();
 
-            out << "public abstract void onValues("
+            out << "public void onValues("
                 << Method::GetJavaArgSignature(method->results())
                 << ");\n";
 
@@ -261,7 +258,10 @@ status_t AST::generateJava(
                 << "Callback cb";
         }
 
-        out << ");\n";
+        out << ")\n";
+        out.indent();
+        out << "throws RemoteException;\n";
+        out.unindent();
     }
 
     out << "\npublic static final class Proxy implements "
@@ -273,11 +273,11 @@ status_t AST::generateJava(
     out << "private android.os.IHwBinder mRemote;\n\n";
     out << "public Proxy(android.os.IHwBinder remote) {\n";
     out.indent();
-    out << "mRemote = remote;\n";
+    out << "mRemote = java.util.Objects.requireNonNull(remote);\n";
     out.unindent();
     out << "}\n\n";
 
-    out << "public android.os.IHwBinder asBinder() {\n";
+    out << "@Override\npublic android.os.IHwBinder asBinder() {\n";
     out.indent();
     out << "return mRemote;\n";
     out.unindent();
@@ -296,7 +296,7 @@ status_t AST::generateJava(
         const bool returnsValue = !method->results().empty();
         const bool needsCallback = method->results().size() > 1;
 
-        out << "public ";
+        out << "@Override\npublic ";
         if (returnsValue && !needsCallback) {
             out << method->results()[0]->type().getJavaType();
         } else {
@@ -317,9 +317,18 @@ status_t AST::generateJava(
                 << "Callback cb";
         }
 
-        out << ") {\n";
+        out << ")\n";
         out.indent();
+        out.indent();
+        out << "throws RemoteException {\n";
+        out.unindent();
 
+        if (method->isHidlReserved() && method->overridesJavaImpl(IMPL_PROXY)) {
+            method->javaImpl(IMPL_PROXY, out);
+            out.unindent();
+            out << "}\n";
+            continue;
+        }
         out << "android.os.HwParcel _hidl_request = new android.os.HwParcel();\n";
         out << "_hidl_request.writeInterfaceToken("
             << superInterface->fullJavaName()
@@ -330,7 +339,8 @@ status_t AST::generateJava(
                     out,
                     "_hidl_request",
                     arg,
-                    false /* isReader */);
+                    false /* isReader */,
+                    false /* addPrefixToName */);
         }
 
         out << "\nandroid.os.HwParcel _hidl_reply = new android.os.HwParcel();\n"
@@ -364,7 +374,8 @@ status_t AST::generateJava(
                         out,
                         "_hidl_reply",
                         arg,
-                        true /* isReader */);
+                        true /* isReader */,
+                        true /* addPrefixToName */);
             }
 
             if (needsCallback) {
@@ -376,14 +387,14 @@ status_t AST::generateJava(
                         out << ", ";
                     }
 
-                    out << arg->name();
+                    out << "_hidl_out_" << arg->name();
                     firstField = false;
                 }
 
                 out << ");\n";
             } else {
                 const std::string returnName = method->results()[0]->name();
-                out << "return " << returnName << ";\n";
+                out << "return _hidl_out_" << returnName << ";\n";
             }
         }
 
@@ -402,7 +413,7 @@ status_t AST::generateJava(
 
     out.indent();
 
-    out << "public android.os.IHwBinder asBinder() {\n";
+    out << "@Override\npublic android.os.IHwBinder asBinder() {\n";
     out.indent();
     out << "return this;\n";
     out.unindent();
@@ -413,18 +424,22 @@ status_t AST::generateJava(
         CHECK_LE(method->results().size(), 1u);
         std::string resultType = method->results().size() == 0 ? "void" :
                 method->results()[0]->type().getJavaType();
-        out << "public final "
+        out << "@Override\npublic final "
             << resultType
             << " "
             << method->name()
-            << "() {\n";
+            << "("
+            << Method::GetJavaArgSignature(method->args())
+            << ") {\n";
+
         out.indent();
-        method->javaImpl(out);
+        method->javaImpl(IMPL_HEADER, out);
         out.unindent();
         out << "\n}\n\n";
     }
 
-    out << "public android.os.IHwInterface queryLocalInterface(String descriptor) {\n";
+    out << "@Override\n"
+        << "public android.os.IHwInterface queryLocalInterface(String descriptor) {\n";
     out.indent();
     // XXX what about potential superClasses?
     out << "if (kInterfaceName.equals(descriptor)) {\n";
@@ -436,7 +451,7 @@ status_t AST::generateJava(
     out.unindent();
     out << "}\n\n";
 
-    out << "public void registerAsService(String serviceName) {\n";
+    out << "public void registerAsService(String serviceName) throws RemoteException {\n";
     out.indent();
 
     out << "registerService(interfaceChain(), serviceName);\n";
@@ -444,13 +459,16 @@ status_t AST::generateJava(
     out.unindent();
     out << "}\n\n";
 
-    out << "public void onTransact("
+    out << "@Override\n"
+        << "public void onTransact("
         << "int _hidl_code, "
         << "android.os.HwParcel _hidl_request, "
         << "final android.os.HwParcel _hidl_reply, "
-        << "int _hidl_flags) {\n";
-
+        << "int _hidl_flags)\n";
     out.indent();
+    out.indent();
+    out << "throws RemoteException {\n";
+    out.unindent();
 
     out << "switch (_hidl_code) {\n";
 
@@ -469,6 +487,13 @@ status_t AST::generateJava(
             << " */:\n{\n";
 
         out.indent();
+        if (method->isHidlReserved() && method->overridesJavaImpl(IMPL_STUB)) {
+            method->javaImpl(IMPL_STUB, out);
+            out.unindent();
+            out << "break;\n";
+            out << "}\n\n";
+            continue;
+        }
 
         out << "_hidl_request.enforceInterface("
             << superInterface->fullJavaName()
@@ -479,14 +504,15 @@ status_t AST::generateJava(
                     out,
                     "_hidl_request",
                     arg,
-                    true /* isReader */);
+                    true /* isReader */,
+                    false /* addPrefixToName */);
         }
 
         if (!needsCallback && returnsValue) {
             const TypedVar *returnArg = method->results()[0];
 
             out << returnArg->type().getJavaType()
-                << " "
+                << " _hidl_out_"
                 << returnArg->name()
                 << " = ";
         }
@@ -526,7 +552,9 @@ status_t AST::generateJava(
                         out,
                         "_hidl_reply",
                         arg,
-                        false /* isReader */);
+                        false /* isReader */,
+                        false /* addPrefixToName */);
+                // no need to add _hidl_out because out vars are are scoped
             }
 
             out << "_hidl_reply.send();\n"
@@ -548,7 +576,8 @@ status_t AST::generateJava(
                         out,
                         "_hidl_reply",
                         returnArg,
-                        false /* isReader */);
+                        false /* isReader */,
+                        true /* addPrefixToName */);
             }
 
             out << "_hidl_reply.send();\n";

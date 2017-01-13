@@ -90,6 +90,10 @@ struct AST {
 
     void getImportedPackages(std::set<FQName> *importSet) const;
 
+    // Run getImportedPackages on this, then run getImportedPackages on
+    // each AST in each package referenced in importSet.
+    void getImportedPackagesHierarchy(std::set<FQName> *importSet) const;
+
     status_t generateVts(const std::string &outputPath) const;
 
     bool isJavaCompatible() const;
@@ -108,6 +112,8 @@ struct AST {
     void addSyntaxError();
     size_t syntaxErrors() const;
 
+    bool isIBase() const;
+
 private:
     Coordinator *mCoordinator;
     std::string mPath;
@@ -121,10 +127,6 @@ private:
     // A set of all external interfaces/types that are _actually_ referenced
     // in this AST, this is a subset of those specified in import statements.
     std::set<FQName> mImportedNames;
-
-    // Similar to mImportedNames, but all types references from "types.hal"
-    // are individually listed.
-    std::set<FQName> mImportedNamesForJava;
 
     // A set of all ASTs we explicitly or implicitly (types.hal) import.
     std::set<AST *> mImportedASTs;
@@ -185,8 +187,6 @@ private:
     status_t generateStubImplSource(const std::string &outputPath) const;
 
     status_t generateMethods(Formatter &out, MethodGenerator gen) const;
-    status_t generateStubMethod(Formatter &out,
-                                const Method *method) const;
     status_t generateStubImplMethod(Formatter &out,
                                     const std::string &className,
                                     const Method *method) const;
@@ -200,10 +200,10 @@ private:
     void generateFetchSymbol(Formatter &out, const std::string &ifaceName) const;
 
     status_t generateProxySource(
-            Formatter &out, const std::string &baseName) const;
+            Formatter &out, const FQName &fqName) const;
 
     status_t generateStubSource(
-            Formatter &out, const std::string &baseName) const;
+            Formatter &out, const Interface *iface) const;
 
     status_t generateStubSourceForMethod(
             Formatter &out, const Interface *iface, const Method *method) const;
@@ -262,7 +262,8 @@ private:
             Formatter &out,
             const std::string &parcelObj,
             const TypedVar *arg,
-            bool isReader) const;
+            bool isReader,
+            bool addPrefixToName) const;
 
     status_t emitTypeDeclarations(Formatter &out) const;
     status_t emitJavaTypeDeclarations(Formatter &out) const;

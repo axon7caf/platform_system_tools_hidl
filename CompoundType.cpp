@@ -16,6 +16,7 @@
 
 #include "CompoundType.h"
 
+#include "ArrayType.h"
 #include "VectorType.h"
 #include <hidl-util/Formatter.h>
 #include <android-base/logging.h>
@@ -67,6 +68,19 @@ bool CompoundType::setFields(
 bool CompoundType::isCompoundType() const {
     return true;
 }
+
+bool CompoundType::canCheckEquality() const {
+    if (mStyle == STYLE_UNION) {
+        return false;
+    }
+    for (const auto &field : *mFields) {
+        if (!field->type().canCheckEquality()) {
+            return false;
+        }
+    }
+    return true;
+}
+
 
 std::string CompoundType::getCppType(
         StorageMode mode,
@@ -132,7 +146,7 @@ void CompoundType::emitReaderWriter(
             << name
             << " == nullptr) {\n";
 
-        out.indentBlock([&]{
+        out.indent([&]{
             out << "_hidl_err = ::android::UNKNOWN_ERROR;\n";
             handleError2(out, mode);
         });
@@ -306,7 +320,7 @@ void CompoundType::emitResolveReferencesEmbedded(
         out << "writeEmbeddedReferenceToParcel(\n";
     }
 
-    out.indentBlock(2, [&]{
+    out.indent(2, [&]{
         if (isReader) {
             out << "const_cast<"
                 << fullName()
@@ -335,7 +349,7 @@ status_t CompoundType::emitTypeDeclarations(Formatter &out) const {
     out << ((mStyle == STYLE_STRUCT) ? "struct" : "union")
         << " "
         << localName()
-        << " {\n";
+        << " final {\n";
 
     out.indent();
 
@@ -354,6 +368,34 @@ status_t CompoundType::emitTypeDeclarations(Formatter &out) const {
     return OK;
 }
 
+
+status_t CompoundType::emitGlobalTypeDeclarations(Formatter &out) const {
+    Scope::emitGlobalTypeDeclarations(out);
+
+    if (!canCheckEquality()) {
+        return OK;
+    }
+
+    out << "inline bool operator==("
+        << getCppArgumentType() << " " << (mFields->empty() ? "/* lhs */" : "lhs") << ", "
+        << getCppArgumentType() << " " << (mFields->empty() ? "/* rhs */" : "rhs") << ") ";
+    out.block([&] {
+        for (const auto &field : *mFields) {
+            out.sIf("lhs." + field->name() + " != rhs." + field->name(), [&] {
+                out << "return false;\n";
+            }).endl();
+        }
+        out << "return true;\n";
+    }).endl().endl();
+
+    out << "inline bool operator!=("
+        << getCppArgumentType() << " lhs," << getCppArgumentType() << " rhs)";
+    out.block([&] {
+        out << "return !(lhs == rhs);\n";
+    }).endl().endl();
+
+    return OK;
+}
 
 status_t CompoundType::emitGlobalHwDeclarations(Formatter &out) const  {
     if (needsEmbeddedReadWrite()) {
@@ -447,6 +489,50 @@ status_t CompoundType::emitJavaTypeDeclarations(
     if (!mFields->empty()) {
         out << "\n";
     }
+
+    ////////////////////////////////////////////////////////////////////////////
+
+    if (canCheckEquality()) {
+        out << "public final boolean equals(" << localName() << " other) ";
+        out.block([&] {
+            for (const auto &field : *mFields) {
+                std::string condition = field->type().isScalar()
+                    ? "this." + field->name() + " != other." + field->name()
+                    : ("!java.util.Objects.deepEquals(this." + field->name()
+                            + ", other." + field->name() + ")");
+                out.sIf(condition, [&] {
+                    out << "return false;\n";
+                }).endl();
+            }
+            out << "return true;\n";
+        }).endl().endl();
+
+        out << "public final int hashCode() ";
+        out.block([&] {
+            out << "return java.util.Objects.hash(";
+            bool first = true;
+            for (const auto &field : *mFields) {
+                if (!first) {
+                    out << ", ";
+                }
+                first = false;
+                if (field->type().isArray()) {
+                    const ArrayType &type = static_cast<const ArrayType &>(field->type());
+                    if (type.countDimensions() == 1 &&
+                        type.getElementType()->resolveToScalarType() != nullptr) {
+                        out << "java.util.Arrays.hashCode(this." << field->name() << ")";
+                    } else {
+                        out << "java.util.Arrays.deepHashCode(this." << field->name() << ")";
+                    }
+                } else {
+                    out << "this." << field->name();
+                }
+            }
+            out << ");\n";
+        }).endl().endl();
+    }
+
+    ////////////////////////////////////////////////////////////////////////////
 
     out << "public final void readFromParcel(android.os.HwParcel parcel) {\n";
     out.indent();

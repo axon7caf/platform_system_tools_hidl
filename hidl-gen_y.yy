@@ -23,7 +23,6 @@
 #include "ConstantExpression.h"
 #include "EnumType.h"
 #include "FQName.h"
-#include "GenericBinder.h"
 #include "Interface.h"
 #include "Location.h"
 #include "Method.h"
@@ -52,13 +51,16 @@ extern int yylex(yy::parser::semantic_type *, yy::parser::location_type *, void 
 bool isValidInterfaceField(const char *identifier, std::string *errorMsg) {
     static const std::vector<std::string> reserved({
         // Injected names to interfaces by auto-generated code
-        "isRemote", "interfaceChain", "descriptor", "hidlStaticBlock", "onTransact",
-        "castFrom", "version", "getInterfaceVersion",
+        "isRemote", "descriptor", "hidlStaticBlock", "onTransact",
+        "castFrom", "Proxy", "Stub",
+
+        // Inherited methods from IBase is detected in addMethod. Not added here
+        // because we need hidl-gen to compile IBase.
 
         // Inherited names by interfaces from IInterface / IBinder
         "onAsBinder", "asBinder", "queryLocalInterface", "getInterfaceDescriptor", "isBinderAlive",
-        "pingBinder", "dump", "transact", "linkToDeath", "unlinkToDeath", "checkSubclass",
-        "attachObject", "findObject", "detachObject", "localBinder", "remoteBinder", "mImpl",
+        "pingBinder", "dump", "transact", "checkSubclass", "attachObject", "findObject",
+        "detachObject", "localBinder", "remoteBinder", "mImpl",
     });
     std::string idstr(identifier);
     if (std::find(reserved.begin(), reserved.end(), idstr) != reserved.end()) {
@@ -88,7 +90,7 @@ bool isValidIdentifier(const char *identifier, std::string *errorMsg) {
         "int8_t", "int16_t", "int32_t", "int64_t", "bool", "float", "double",
         "interface", "struct", "union", "string", "vec", "enum", "ref", "handle",
         "package", "import", "typedef", "generates", "oneway", "extends",
-        "MQDescriptorSync", "MQDescriptorUnsync",
+        "fmq_sync", "fmq_unsync",
     });
     static const std::vector<std::string> cppKeywords({
         "alignas", "alignof", "and", "and_eq", "asm", "atomic_cancel", "atomic_commit",
@@ -114,8 +116,8 @@ bool isValidIdentifier(const char *identifier, std::string *errorMsg) {
     });
     static const std::vector<std::string> cppCollide({
         "size_t", "offsetof",
-        "DECLARE_REGISTER_AND_GET_SERVICE", "IMPLEMENT_HWBINDER_META_INTERFACE",
-        "IMPLEMENT_REGISTER_AND_GET_SERVICE"
+        "DECLARE_SERVICE_MANAGER_INTERACTIONS", "IMPLEMENT_HWBINDER_META_INTERFACE",
+        "IMPLEMENT_SERVICE_MANAGER_INTERACTIONS"
     });
     static const std::vector<std::string> hidlReserved({
         // Part of HidlSupport
@@ -227,7 +229,7 @@ bool isValidIdentifier(const char *identifier, std::string *errorMsg) {
 %type<type> fqtype
 %type<str> valid_identifier
 
-%type<type> type opt_storage_type
+%type<type> type enum_storage_type
 %type<type> array_type_base
 %type<arrayType> array_type
 %type<type> opt_extends
@@ -266,7 +268,7 @@ bool isValidIdentifier(const char *identifier, std::string *errorMsg) {
     android::ConstantExpression *constantExpression;
     std::vector<android::EnumValue *> *enumValues;
     android::TypedVar *typedVar;
-    std::vector<android::TypedVar *> *typedVars;
+    android::TypedVarVector *typedVars;
     android::Method *method;
     android::CompoundType::Style compoundStyle;
     std::vector<std::string> *stringVec;
@@ -585,7 +587,22 @@ type_declaration_body
 interface_declaration
     : INTERFACE valid_identifier opt_extends
       {
-          if ($3 != NULL && !$3->isInterface()) {
+          Type *parent = $3;
+
+          if (ast->package() != gIBasePackageFqName) {
+              if (!ast->addImport(gIBaseFqName.string().c_str())) {
+                  std::cerr << "ERROR: Unable to automatically import '"
+                            << gIBaseFqName.string()
+                            << "' at " << @$
+                            << "\n";
+                  YYERROR;
+              }
+              if (parent == nullptr) {
+                parent = ast->lookupType(gIBaseFqName);
+              }
+          }
+
+          if (parent != NULL && !parent->isInterface()) {
               std::cerr << "ERROR: You can only extend interfaces. at " << @3
                         << "\n";
 
@@ -599,7 +616,7 @@ interface_declaration
               YYERROR;
           }
 
-          Interface *iface = new Interface($2, convertYYLoc(@2), static_cast<Interface *>($3));
+          Interface *iface = new Interface($2, convertYYLoc(@2), static_cast<Interface *>(parent));
 
           // Register interface immediately so it can be referenced inside
           // definition.
@@ -729,17 +746,25 @@ method_declaration
 typed_vars
     : /* empty */
       {
-          $$ = new std::vector<TypedVar *>;
+          $$ = new TypedVarVector();
       }
     | typed_var
       {
-          $$ = new std::vector<TypedVar *>;
-          $$->push_back($1);
+          $$ = new TypedVarVector();
+          if (!$$->add($1)) {
+              std::cerr << "ERROR: duplicated argument or result name "
+                  << $1->name() << " at " << @1 << "\n";
+              ast->addSyntaxError();
+          }
       }
     | typed_vars ',' typed_var
       {
           $$ = $1;
-          $$->push_back($3);
+          if (!$$->add($3)) {
+              std::cerr << "ERROR: duplicated argument or result name "
+                  << $3->name() << " at " << @3 << "\n";
+              ast->addSyntaxError();
+          }
       }
     ;
 
@@ -843,9 +868,8 @@ compound_declaration
     | named_enum_declaration { $$ = $1; }
     ;
 
-opt_storage_type
-    : /* empty */ { $$ = NULL; }
-    | ':' fqtype
+enum_storage_type
+    : ':' fqtype
       {
           $$ = $2;
 
@@ -864,7 +888,7 @@ opt_comma
     ;
 
 named_enum_declaration
-    : ENUM valid_identifier opt_storage_type
+    : ENUM valid_identifier enum_storage_type
       {
           ast->enterScope(new EnumType($2, convertYYLoc(@2), $3));
       }
@@ -927,9 +951,9 @@ array_type_base
     : fqtype { $$ = $1; }
     | TEMPLATED '<' type '>'
       {
-          if (!$1->isVector() && $3->isBinder()) {
-              std::cerr << "ERROR: TemplatedType of interface types are not "
-                        << "supported. at " << @3 << "\n";
+          if (!$1->isCompatibleElementType($3)) {
+              std::cerr << "ERROR: " << $1->typeName() << " of " << $3->typeName()
+                        << " is not supported. at " << @3 << "\n";
 
               YYERROR;
           }
@@ -938,13 +962,19 @@ array_type_base
       }
     | TEMPLATED '<' TEMPLATED '<' type RSHIFT
       {
-          if ($5->isBinder()) {
-              std::cerr << "ERROR: TemplatedType of interface types are not "
-                        << "supported. at " << @5 << "\n";
+          if (!$3->isCompatibleElementType($5)) {
+              std::cerr << "ERROR: " << $3->typeName() << " of " << $5->typeName()
+                        << " is not supported. at " << @3 << "\n";
 
               YYERROR;
           }
           $3->setElementType($5);
+          if (!$1->isCompatibleElementType($3)) {
+              std::cerr << "ERROR: " << $1->typeName() << " of " << $3->typeName()
+                        << " is not supported. at " << @3 << "\n";
+
+              YYERROR;
+          }
           $1->setElementType($3);
           $$ = $1;
       }
@@ -976,7 +1006,18 @@ type
     : array_type_base { $$ = $1; }
     | array_type { $$ = $1; }
     | annotated_compound_declaration { $$ = $1; }
-    | INTERFACE { $$ = new GenericBinder; }
+    | INTERFACE
+      {
+          // "interface" is a synonym of android.hidl.base@1.0::IBase
+          $$ = ast->lookupType(gIBaseFqName);
+          if ($$ == nullptr) {
+              std::cerr << "FATAL: Cannot find "
+                        << gIBaseFqName.string()
+                        << " at " << @1 << "\n";
+
+              YYERROR;
+      }
+    }
     ;
 
 %%

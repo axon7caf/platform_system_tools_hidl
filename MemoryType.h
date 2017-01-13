@@ -14,24 +14,24 @@
  * limitations under the License.
  */
 
-#ifndef PREDEFINED_TYPE_H_
+#ifndef MEMORY_TYPE_H_
 
-#define PREDEFINED_TYPE_H_
+#define MEMORY_TYPE_H_
 
 #include "Type.h"
 
 namespace android {
 
-struct PredefinedType : public Type {
-    PredefinedType(const char *nsp, const char *name);
+struct MemoryType : public Type {
+    MemoryType();
 
     void addNamedTypesToSet(std::set<const FQName> &set) const override;
-
-    std::string fullName() const;
 
     std::string getCppType(
             StorageMode mode,
             bool specifyNamespaces) const override;
+
+    std::string getVtsType() const override;
 
     void emitReaderWriter(
             Formatter &out,
@@ -54,18 +54,17 @@ struct PredefinedType : public Type {
             const std::string &parentName,
             const std::string &offsetText) const override;
 
-    bool isJavaCompatible() const override;
-
     bool needsEmbeddedReadWrite() const override;
     bool resultNeedsDeref() const override;
 
-private:
-    std::string mNamespace;
-    std::string mName;
+    bool isJavaCompatible() const override;
 
-    DISALLOW_COPY_AND_ASSIGN(PredefinedType);
+    void getAlignmentAndSize(size_t *align, size_t *size) const override;
+
+    status_t emitVtsTypeDeclarations(Formatter &out) const override;
 };
 
 }  // namespace android
 
-#endif  // PREDEFINED_TYPE_H_
+#endif  // MEMORY_TYPE_H_
+

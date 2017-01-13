@@ -20,6 +20,7 @@ import android.hardware.tests.baz.V1_0.IBase;
 import android.hardware.tests.baz.V1_0.IBaz;
 import android.hardware.tests.baz.V1_0.IBazCallback;
 import android.os.HwBinder;
+import android.os.RemoteException;
 import android.util.Log;
 
 import java.util.ArrayList;
@@ -37,7 +38,7 @@ public final class HidlTestJava {
         System.exit(exitCode);
     }
 
-    public int run(String[] args) {
+    public int run(String[] args) throws RemoteException {
         if (args[0].equals("-c")) {
             client();
         } else if (args[0].equals("-s")) {
@@ -317,6 +318,41 @@ public final class HidlTestJava {
         return out.toString();
     }
 
+    final class HidlDeathRecipient implements HwBinder.DeathRecipient {
+        final Object mLock = new Object();
+        boolean mCalled = false;
+        long mCookie = 0;
+
+        @Override
+        public void serviceDied(long cookie) {
+            synchronized (mLock) {
+                mCalled = true;
+                mCookie = cookie;
+                mLock.notify();
+            }
+        }
+
+        public boolean cookieMatches(long cookie) {
+            synchronized (mLock) {
+                return mCookie == cookie;
+            }
+        }
+
+        public boolean waitUntilServiceDied(long timeoutMillis) {
+            synchronized(mLock) {
+                while (!mCalled) {
+                    try {
+                        mLock.wait(timeoutMillis);
+                    } catch (InterruptedException e) {
+                        continue; // Spin for another loop
+                    }
+                    break; // got notified or timeout hit
+                }
+                return mCalled;
+            }
+        }
+    };
+
     private void ExpectTrue(boolean x) {
         if (x) {
             return;
@@ -345,10 +381,14 @@ public final class HidlTestJava {
             return mCalled;
         }
 
-        public void heyItsMe(IBazCallback cb) {
+        public void heyItsMe(IBazCallback cb) throws RemoteException {
             mCalled = true;
 
             cb.heyItsMe(null);
+        }
+
+        public void hey() {
+            mCalled = true;
         }
     }
 
@@ -398,7 +438,7 @@ public final class HidlTestJava {
         return "positively huge!";
     }
 
-    private void client() {
+    private void client() throws RemoteException {
         {
             // Test access through base interface binder.
             IBase baseProxy = IBase.getService("baz");
@@ -689,6 +729,47 @@ public final class HidlTestJava {
                         Expect(c, "Drei");
                     }
                 });
+
+        proxy.returnABunchOfStrings((a,b,c) -> Expect(a + b + c, "EinsZweiDrei"));
+
+        proxy.callMeLater(new BazCallback());
+        System.gc();
+        proxy.iAmFreeNow();
+
+        {
+            IBaz.T t1 = new IBaz.T();
+            IBaz.T t2 = new IBaz.T();
+            for (int i = 0; i < 5; i++) {
+                for (int j = 0; j < 3; j++) {
+                    t1.matrix5x3[i][j] = t2.matrix5x3[i][j] = (i + 1) * (j + 1);
+                }
+            }
+            ExpectTrue(t1.equals(t2));
+            ExpectTrue(t1.hashCode() == t2.hashCode());
+            t2.matrix5x3[4][2] = -60;
+            ExpectTrue(!t1.equals(t2));
+        }
+
+        // --- DEATH RECIPIENT TESTING ---
+        // This must always be done last, since it will kill the native server process
+        HidlDeathRecipient recipient1 = new HidlDeathRecipient();
+        HidlDeathRecipient recipient2 = new HidlDeathRecipient();
+
+        final int cookie1 = 0x1481;
+        final int cookie2 = 0x1482;
+        ExpectTrue(proxy.linkToDeath(recipient1, cookie1));
+        ExpectTrue(proxy.linkToDeath(recipient2, cookie2));
+        ExpectTrue(proxy.unlinkToDeath(recipient2));
+        try {
+            proxy.dieNow();
+        } catch (RemoteException e) {
+            // Expected
+        }
+        ExpectTrue(recipient1.waitUntilServiceDied(2000 /*timeoutMillis*/));
+        ExpectTrue(!recipient2.waitUntilServiceDied(2000 /*timeoutMillis*/));
+        ExpectTrue(recipient1.cookieMatches(cookie1));
+        Log.d(TAG, "OK, exiting");
+
     }
 
     class Baz extends IBaz.Stub {
@@ -850,15 +931,48 @@ public final class HidlTestJava {
             return out;
         }
 
+        public void takeAMask(byte bf, byte first, IBase.MyMask second, byte third,
+                takeAMaskCallback cb) {
+            cb.onValues(bf, (byte)(bf | first),
+                    (byte)(second.value & bf), (byte)((bf | bf) & third));
+        }
+
+        public byte returnABitField() {
+            return 0;
+        }
+
+        public int size(int size) {
+            return size;
+        }
+
         class BazCallback extends IBazCallback.Stub {
             public void heyItsMe(IBazCallback cb) {
                 Log.d(TAG, "SERVER: heyItsMe");
             }
+
+            public void hey() {
+                Log.d(TAG, "SERVER: hey");
+            }
         }
 
-        public void callMe(IBazCallback cb) {
+        public void callMe(IBazCallback cb) throws RemoteException {
             Log.d(TAG, "callMe");
             cb.heyItsMe(new BazCallback());
+        }
+
+        private IBazCallback mStoredCallback;
+        public void callMeLater(IBazCallback cb) {
+            mStoredCallback = cb;
+        }
+
+        public void iAmFreeNow() throws RemoteException {
+            if (mStoredCallback != null) {
+                mStoredCallback.hey();
+            }
+        }
+
+        public void dieNow() {
+            // Not tested in Java
         }
 
         public byte useAnEnum(byte zzz) {
@@ -897,7 +1011,7 @@ public final class HidlTestJava {
         }
     }
 
-    private void server() {
+    private void server() throws RemoteException {
         Baz baz = new Baz();
         baz.registerAsService("baz");
 

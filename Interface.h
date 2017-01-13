@@ -31,9 +31,12 @@ struct Interface : public Scope {
 
     bool addMethod(Method *method);
 
+    bool isElidableType() const override;
     bool isInterface() const override;
     bool isBinder() const override;
     bool isRootType() const { return mSuperType == nullptr; }
+    bool isIBase() const { return fqName() == gIBaseFqName; }
+    std::string typeName() const override;
 
     const Interface *superType() const;
 
@@ -61,12 +64,15 @@ struct Interface : public Scope {
     // this->hidlReservedMethods()
     std::vector<InterfaceAndMethod> allMethodsFromRoot() const;
 
+    // aliases for corresponding methods in this->fqName()
     std::string getBaseName() const;
-
-    FQName getHwName() const;
-    FQName getProxyName() const;
-    FQName getStubName() const;
-    FQName getPassthroughName() const;
+    std::string getProxyName() const;
+    std::string getStubName() const;
+    std::string getPassthroughName() const;
+    std::string getHwName() const;
+    FQName getProxyFqName() const;
+    FQName getStubFqName() const;
+    FQName getPassthroughFqName() const;
 
     std::string getCppType(
             StorageMode mode,
@@ -105,6 +111,8 @@ private:
     mutable bool mIsJavaCompatibleInProgress;
     Method *createDescriptorChainMethod() const;
     Method *createSyspropsChangedMethod() const;
+    Method *createLinkToDeathMethod() const;
+    Method *createUnlinkToDeathMethod() const;
 
     DISALLOW_COPY_AND_ASSIGN(Interface);
 };

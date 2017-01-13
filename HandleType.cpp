@@ -27,6 +27,10 @@ void HandleType::addNamedTypesToSet(std::set<const FQName> &) const {
     // do nothing
 }
 
+bool HandleType::isHandle() const {
+    return true;
+}
+
 std::string HandleType::getCppType(StorageMode mode,
                                    bool specifyNamespaces) const {
     const std::string base =
@@ -43,6 +47,10 @@ std::string HandleType::getCppType(StorageMode mode,
         case StorageMode_Result:
             return base;
     }
+}
+
+std::string HandleType::getVtsType() const {
+    return "TYPE_HANDLE";
 }
 
 void HandleType::emitReaderWriter(
@@ -162,6 +170,11 @@ bool HandleType::isJavaCompatible() const {
 
 void HandleType::getAlignmentAndSize(size_t *align, size_t *size) const {
     *align = *size = 8;
+}
+
+status_t HandleType::emitVtsTypeDeclarations(Formatter &out) const {
+    out << "type: " << getVtsType() << "\n";
+    return OK;
 }
 
 }  // namespace android
