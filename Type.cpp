@@ -189,6 +189,26 @@ void Type::emitResolveReferencesEmbedded(
     CHECK(!"Should not be here");
 }
 
+void Type::emitDump(
+        Formatter &out,
+        const std::string &streamName,
+        const std::string &name) const {
+    emitDumpWithMethod(out, streamName, "::android::hardware::details::toString", name);
+}
+
+void Type::emitDumpWithMethod(
+        Formatter &out,
+        const std::string &streamName,
+        const std::string &methodName,
+        const std::string &name) const {
+    out << streamName
+        << " += "
+        << methodName
+        << "("
+        << name
+        << ");\n";
+}
+
 bool Type::useParentInEmitResolveReferencesEmbedded() const {
     return needsResolveReferences();
 }
@@ -269,34 +289,6 @@ void Type::handleError(Formatter &out, ErrorMode mode) const {
         case ErrorMode_Return:
         {
             out << "if (_hidl_err != ::android::OK) { return _hidl_err; }\n\n";
-            break;
-        }
-    }
-}
-
-void Type::handleError2(Formatter &out, ErrorMode mode) const {
-    switch (mode) {
-        case ErrorMode_Goto:
-        {
-            out << "goto _hidl_error;\n";
-            break;
-        }
-
-        case ErrorMode_Break:
-        {
-            out << "break;\n";
-            break;
-        }
-
-        case ErrorMode_Ignore:
-        {
-            out << "/* ignoring _hidl_error! */";
-            break;
-        }
-
-        case ErrorMode_Return:
-        {
-            out << "return _hidl_err;\n";
             break;
         }
     }

@@ -27,16 +27,25 @@
 #define RE_MAJOR        "[0-9]+"
 #define RE_MINOR        "[0-9]+"
 
-static const std::regex kRE1("(" RE_PATH ")@(" RE_MAJOR ")[.](" RE_MINOR ")?::(" RE_PATH ")");
+// android.hardware.foo@1.0::IFoo.Type
+static const std::regex kRE1("(" RE_PATH ")@(" RE_MAJOR ")[.](" RE_MINOR ")::(" RE_PATH ")");
+// @1.0::IFoo.Type
 static const std::regex kRE2("@(" RE_MAJOR ")[.](" RE_MINOR ")::(" RE_PATH ")");
+// android.hardware.foo@1.0 (for package declaration and whole package import)
 static const std::regex kRE3("(" RE_PATH ")@(" RE_MAJOR ")[.](" RE_MINOR ")");
+// IFoo.Type
 static const std::regex kRE4("(" RE_COMPONENT ")([.]" RE_COMPONENT ")+");
+// Type (a plain identifier)
 static const std::regex kRE5("(" RE_COMPONENT ")");
 
-static const std::regex kRE6("(" RE_PATH ")@(" RE_MAJOR ")[.](" RE_MINOR ")?::(" RE_PATH "):(" RE_COMPONENT ")");
+// android.hardware.foo@1.0::IFoo.Type:MY_ENUM_VALUE
+static const std::regex kRE6("(" RE_PATH ")@(" RE_MAJOR ")[.](" RE_MINOR ")::(" RE_PATH "):(" RE_COMPONENT ")");
+// @1.0::IFoo.Type:MY_ENUM_VALUE
 static const std::regex kRE7("@(" RE_MAJOR ")[.](" RE_MINOR ")::(" RE_PATH "):(" RE_COMPONENT ")");
+// IFoo.Type:MY_ENUM_VALUE
 static const std::regex kRE8("(" RE_PATH "):(" RE_COMPONENT ")");
 
+// 1.0
 static const std::regex kREVer("(" RE_MAJOR ")[.](" RE_MINOR ")");
 
 namespace android {
@@ -63,6 +72,11 @@ FQName::FQName(
       mName(name),
       mValueName(valueName) {
     setVersion(version);
+
+    // Check if this is actually a valid fqName
+    FQName other;
+    other.setTo(this->string());
+    CHECK(other.mValid && (*this) == other);
 }
 
 FQName::FQName(const FQName& other)
@@ -156,9 +170,10 @@ bool FQName::setTo(const std::string &s) {
     }
 
     // mValueName must go with mName.
-    if (!mValueName.empty()) {
-        CHECK(!mName.empty());
-    }
+    CHECK(mValueName.empty() || !mName.empty());
+
+    // package without version is not allowed.
+    CHECK(mPackage.empty() || !version().empty());
 
     return isValid();
 }
@@ -230,6 +245,10 @@ FQName FQName::typeName() const {
 void FQName::applyDefaults(
         const std::string &defaultPackage,
         const std::string &defaultVersion) {
+
+    // package without version is not allowed.
+    CHECK(mPackage.empty() || !version().empty());
+
     if (mPackage.empty()) {
         mPackage = defaultPackage;
     }
@@ -298,11 +317,11 @@ std::string FQName::getInterfaceHwName() const {
 }
 
 std::string FQName::getInterfaceProxyName() const {
-    return "Bp" + getInterfaceBaseName();
+    return "BpHw" + getInterfaceBaseName();
 }
 
 std::string FQName::getInterfaceStubName() const {
-    return "Bn" + getInterfaceBaseName();
+    return "BnHw" + getInterfaceBaseName();
 }
 
 std::string FQName::getInterfacePassthroughName() const {
@@ -325,7 +344,11 @@ FQName FQName::getTypesForPackage() const {
     return FQName(package(), version(), "types");
 }
 
-const FQName FQName::getTopLevelType() const {
+FQName FQName::getPackageAndVersion() const {
+    return FQName(package(), version(), "");
+}
+
+FQName FQName::getTopLevelType() const {
     auto idx = mName.find('.');
 
     if (idx == std::string::npos) {

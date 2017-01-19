@@ -267,6 +267,55 @@ status_t EnumType::emitGlobalTypeDeclarations(Formatter &out) const {
     emitBitFieldBitwiseAssignmentOperator(out, "|");
     emitBitFieldBitwiseAssignmentOperator(out, "&");
 
+    out << "template<typename>\n"
+        << "std::string toString("
+        << resolveToScalarType()->getCppArgumentType()
+        << " o);\n";
+    out << "template<>\n"
+        << "std::string toString<" << getCppStackType() << ">("
+        << resolveToScalarType()->getCppArgumentType()
+        << " o);\n\n";
+
+    out << "inline std::string toString("
+        << getCppArgumentType()
+        << " o) ";
+
+    out.block([&] {
+        out << "return toString<" << getCppStackType() << ">("
+            << "static_cast<" << resolveToScalarType()->getCppStackType() << ">(o));\n";
+    }).endl().endl();
+
+    return OK;
+}
+
+status_t EnumType::emitTypeDefinitions(Formatter &out, const std::string /* prefix */) const {
+
+    const ScalarType *scalarType = mStorageType->resolveToScalarType();
+    CHECK(scalarType != NULL);
+
+    out << "template<>\n"
+        << "std::string toString<" << getCppStackType() << ">("
+        << resolveToScalarType()->getCppArgumentType()
+        << " o) ";
+    out.block([&] {
+        // include toHexString for scalar types
+        out << "using ::android::hardware::details::toHexString;\n"
+            << "std::string os;\n";
+        out << "bool first = true;\n";
+        for (EnumValue *value : values()) {
+            out.sIf("o & " + fullName() + "::" + value->name(), [&] {
+                out << "os += (first ? \"\" : \" | \"); "
+                    << "first = false;\n"
+                    << "os += \"" << value->name() << "\";\n";
+            }).endl();
+        }
+        out << "os += \" (\";\n";
+        scalarType->emitHexDump(out, "os", "o");
+        out << "os += \")\";\n";
+
+        out << "return os;\n";
+    }).endl().endl();
+
     return OK;
 }
 
@@ -406,32 +455,36 @@ status_t EnumType::emitExportedHeader(Formatter &out, bool forJava) const {
 
     const AnnotationParam *nameParam = annotation->getParam("name");
     if (nameParam != nullptr) {
-        CHECK_EQ(nameParam->getValues()->size(), 1u);
+        name = nameParam->getSingleString();
+    }
 
-        std::string quotedString = nameParam->getValues()->at(0);
-        name = quotedString.substr(1, quotedString.size() - 2);
+    bool exportParent = true;
+    const AnnotationParam *exportParentParam = annotation->getParam("export_parent");
+    if (exportParentParam != nullptr) {
+        exportParent = exportParentParam->getSingleBool();
     }
 
     std::string valuePrefix;
     const AnnotationParam *prefixParam = annotation->getParam("value_prefix");
     if (prefixParam != nullptr) {
-        CHECK_EQ(prefixParam->getValues()->size(), 1u);
-
-        std::string quotedString = prefixParam->getValues()->at(0);
-        valuePrefix = quotedString.substr(1, quotedString.size() - 2);
+        valuePrefix = prefixParam->getSingleString();
     }
 
     std::string valueSuffix;
     const AnnotationParam *suffixParam = annotation->getParam("value_suffix");
     if (suffixParam != nullptr) {
-        CHECK_EQ(suffixParam->getValues()->size(), 1u);
-
-        std::string quotedString = suffixParam->getValues()->at(0);
-        valueSuffix = quotedString.substr(1, quotedString.size() - 2);
+        valueSuffix = suffixParam->getSingleString();
     }
 
     const ScalarType *scalarType = mStorageType->resolveToScalarType();
     CHECK(scalarType != nullptr);
+
+    std::vector<const EnumType *> chain;
+    if (exportParent) {
+        getTypeChain(&chain);
+    } else {
+        chain = { this };
+    }
 
     if (forJava) {
         if (!name.empty()) {
@@ -446,9 +499,6 @@ status_t EnumType::emitExportedHeader(Formatter &out, bool forJava) const {
 
         const std::string typeName =
             scalarType->getJavaType(false /* forInitializer */);
-
-        std::vector<const EnumType *> chain;
-        getTypeChain(&chain);
 
         for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
             const auto &type = *it;
@@ -494,9 +544,6 @@ status_t EnumType::emitExportedHeader(Formatter &out, bool forJava) const {
     out << "enum {\n";
 
     out.indent();
-
-    std::vector<const EnumType *> chain;
-    getTypeChain(&chain);
 
     for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
         const auto &type = *it;
@@ -650,14 +697,8 @@ status_t BitFieldType::emitVtsTypeDeclarations(Formatter &out) const {
 
 status_t BitFieldType::emitVtsAttributeType(Formatter &out) const {
     out << "type: " << getVtsType() << "\n";
-    out << "enum_value: {\n";
-    out.indent();
-    status_t err = mElementType->emitVtsAttributeType(out);
-    if (err != OK) {
-        return err;
-    }
-    out.unindent();
-    out << "}\n";
+    out << "predefined_type: \""
+        << static_cast<NamedType *>(mElementType)->fullName() << "\"\n";
     return OK;
 }
 
@@ -680,6 +721,20 @@ void BitFieldType::emitReaderWriter(
             isReader,
             mode,
             true /* needsCast */);
+}
+
+// a bitfield maps to the underlying scalar type in C++, so operator<< is
+// already defined. We can still emit useful information if the bitfield is
+// in a struct / union by overriding emitDump as below.
+void BitFieldType::emitDump(
+        Formatter &out,
+        const std::string &streamName,
+        const std::string &name) const {
+    CHECK(mElementType->isEnum());
+    const EnumType *enumType = static_cast<EnumType *>(mElementType);
+    out << streamName << " += "<< enumType->fqName().cppNamespace()
+        << "::toString<" << enumType->getCppStackType()
+        << ">(" << name << ");\n";
 }
 
 void BitFieldType::emitJavaFieldReaderWriter(

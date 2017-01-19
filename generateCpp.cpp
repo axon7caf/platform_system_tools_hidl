@@ -127,8 +127,19 @@ void AST::enterLeaveNamespace(Formatter &out, bool enter) const {
 
 static void declareServiceManagerInteractions(Formatter &out, const std::string &interfaceName) {
     out << "static ::android::sp<" << interfaceName << "> getService("
-        << "const std::string &serviceName, bool getStub=false);\n";
-    out << "::android::status_t registerAsService(const std::string &serviceName);\n";
+        << "const std::string &serviceName=\"default\", bool getStub=false);\n";
+    out << "static ::android::sp<" << interfaceName << "> getService("
+        << "const char serviceName[], bool getStub=false)"
+        << "  { std::string str(serviceName ? serviceName : \"\");"
+        << "      return getService(str, getStub); }\n";
+    out << "static ::android::sp<" << interfaceName << "> getService("
+        << "const ::android::hardware::hidl_string& serviceName, bool getStub=false)"
+        // without c_str the std::string constructor is ambiguous
+        << "  { std::string str(serviceName.c_str());"
+        << "      return getService(str, getStub); }\n";
+    out << "static ::android::sp<" << interfaceName << "> getService("
+        << "bool getStub) { return getService(\"default\", getStub); }\n";
+    out << "::android::status_t registerAsService(const std::string &serviceName=\"default\");\n";
     out << "static bool registerForNotifications(\n";
     out.indent(2, [&] {
         out << "const std::string &serviceName,\n"
@@ -537,6 +548,14 @@ status_t AST::generatePassthroughMethod(Formatter &out,
     out << " {\n";
     out.indent();
 
+    if (method->isHidlReserved()
+        && method->overridesCppImpl(IMPL_PASSTHROUGH)) {
+        method->cppImpl(IMPL_PASSTHROUGH, out);
+        out.unindent();
+        out << "}\n\n";
+        return OK;
+    }
+
     const bool returnsValue = !method->results().empty();
     const TypedVar *elidedReturn = method->canElideCallback();
 
@@ -737,7 +756,7 @@ status_t AST::generateStubHeader(const std::string &outputPath) const {
     out << "struct "
         << klassName;
     if (iface->isIBase()) {
-        out << " : public ::android::hardware::BBinder";
+        out << " : public ::android::hardware::BHwBinder";
         out << ", public ::android::hardware::HidlInstrumentor {\n";
     } else {
         out << " : public "
@@ -900,6 +919,10 @@ status_t AST::generateAllSource(const std::string &outputPath) const {
     }
 
     Formatter out(file);
+
+    out << "#define LOG_TAG \""
+        << mPackage.string() << "::" << baseName
+        << "\"\n\n";
 
     out << "#include <android/log.h>\n";
     out << "#include <cutils/trace.h>\n";
@@ -1333,7 +1356,7 @@ status_t AST::generateStubSource(
     out << "}\n\n";
 
     if (iface->isIBase()) {
-        // BnBase has a constructor to initialize the HidlInstrumentor
+        // BnHwBase has a constructor to initialize the HidlInstrumentor
         // class properly.
         out << klassName
             << "::"
@@ -1991,4 +2014,3 @@ status_t AST::generateCppInstrumentationCall(
 }
 
 }  // namespace android
-

@@ -78,25 +78,16 @@ void StringType::emitReaderWriter(
         parcelObj + (parcelObjIsPointer ? "->" : ".");
 
     if (isReader) {
-        out << name
-            << " = (const ::android::hardware::hidl_string *)"
+        out << "_hidl_err = "
             << parcelObjDeref
-            << "readBuffer("
-            << "&"
+            << "readBuffer(&"
             << parentName
-            << ");\n";
+            << ", "
+            << " reinterpret_cast<const void **>("
+            << "&" << name
+            << "));\n\n";
 
-        out << "if ("
-            << name
-            << " == nullptr) {\n";
-
-        out.indent();
-
-        out << "_hidl_err = ::android::UNKNOWN_ERROR;\n";
-        handleError2(out, mode);
-
-        out.unindent();
-        out << "}\n\n";
+        handleError(out, mode);
     } else {
         out << "_hidl_err = "
             << parcelObjDeref
@@ -175,10 +166,13 @@ void StringType::emitJavaFieldReaderWriter(
         out.indent();
         out.indent();
 
+        // hidl_string's embedded buffer is never null(able), because it defaults to a
+        // buffer containing an empty string.
         out << blobName
             << ".handle(),\n"
             << offset
-            << " + 0 /* offsetof(hidl_string, mBuffer) */);\n\n";
+            << " + 0 /* offsetof(hidl_string, mBuffer) */,"
+            << "false /* nullable */);\n\n";
 
         out.unindent();
         out.unindent();

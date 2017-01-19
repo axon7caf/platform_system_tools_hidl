@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <android-base/logging.h>
+#include <hidl-util/StringHelper.h>
 #include <iterator>
 #include <dirent.h>
 #include <sys/stat.h>
@@ -61,7 +62,7 @@ AST *Coordinator::parse(const FQName &fqName, std::set<AST *> *parsedASTs) {
 
     if (fqName.name() != "types") {
         // Any interface file implicitly imports its package's types.hal.
-        FQName typesName(fqName.package(), fqName.version(), "types");
+        FQName typesName = fqName.getTypesForPackage();
         typesAST = parse(typesName, parsedASTs);
 
         // fall through.
@@ -167,7 +168,7 @@ Coordinator::findPackageRoot(const FQName &fqName) const {
     // there are multiple hits.
     auto it = mPackageRoots.begin();
     for (; it != mPackageRoots.end(); it++) {
-        if (fqName.package().find(*it) != std::string::npos) {
+        if (StringHelper::StartsWith(fqName.package(), *it)) {
             break;
         }
     }

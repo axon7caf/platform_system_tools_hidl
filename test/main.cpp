@@ -13,11 +13,12 @@
 #include <android/hidl/token/1.0/ITokenManager.h>
 
 #include <android/hardware/tests/foo/1.0/IFoo.h>
-#include <android/hardware/tests/foo/1.0/BnSimple.h>
+#include <android/hardware/tests/foo/1.0/BnHwSimple.h>
 #include <android/hardware/tests/foo/1.0/BsSimple.h>
-#include <android/hardware/tests/foo/1.0/BpSimple.h>
+#include <android/hardware/tests/foo/1.0/BpHwSimple.h>
 #include <android/hardware/tests/bar/1.0/IBar.h>
 #include <android/hardware/tests/bar/1.0/IComplicated.h>
+#include <android/hardware/tests/bar/1.0/IImportRules.h>
 #include <android/hardware/tests/inheritance/1.0/IFetcher.h>
 #include <android/hardware/tests/inheritance/1.0/IGrandparent.h>
 #include <android/hardware/tests/inheritance/1.0/IParent.h>
@@ -229,6 +230,67 @@ struct Complicated : public IComplicated {
 
 private:
     int32_t mCookie;
+};
+
+// Ensure (statically) that the types in IImportRules resolves to the correct types by
+// overriding the methods with fully namespaced types as arguments.
+struct MyImportRules : public ::android::hardware::tests::bar::V1_0::IImportRules {
+    Return<void> rule0a(
+            const ::android::hardware::tests::bar::V1_0::IImportRules::Outer&) override {
+        return Void();
+    }
+
+    Return<void> rule0a1(
+            const ::android::hardware::tests::bar::V1_0::IImportRules::Outer&) override {
+        return Void();
+    }
+
+    Return<void> rule0b(
+            const ::android::hardware::tests::bar::V1_0::IImportRules::Outer&) override {
+        return Void();
+    }
+
+    Return<void> rule0c(const ::android::hardware::tests::foo::V1_0::Outer&) override {
+        return Void();
+    }
+
+    Return<void> rule0d(const ::android::hardware::tests::foo::V1_0::Outer&) override {
+        return Void();
+    }
+
+    Return<void> rule0e(
+            const ::android::hardware::tests::bar::V1_0::IImportRules::Outer::Inner&) override {
+        return Void();
+    }
+
+    Return<void> rule0f(
+            const ::android::hardware::tests::bar::V1_0::IImportRules::Outer::Inner&) override {
+        return Void();
+    }
+
+    Return<void> rule0g(const ::android::hardware::tests::foo::V1_0::Outer::Inner&) override {
+        return Void();
+    }
+
+    Return<void> rule0h(const ::android::hardware::tests::foo::V1_0::Outer::Inner&) override {
+        return Void();
+    }
+
+    Return<void> rule1a(const ::android::hardware::tests::bar::V1_0::Def&) override {
+        return Void();
+    }
+
+    Return<void> rule1b(const ::android::hardware::tests::foo::V1_0::Def&) override {
+        return Void();
+    }
+
+    Return<void> rule2a(const ::android::hardware::tests::foo::V1_0::Unrelated&) override {
+        return Void();
+    }
+
+    Return<void> rule2b(const sp<::android::hardware::tests::foo::V1_0::IFooCallback>&) override {
+        return Void();
+    }
 };
 
 struct ServiceNotification : public IServiceNotification {
@@ -491,6 +553,37 @@ public:
     }
 };
 
+TEST_F(HidlTest, ToStringTest) {
+    using namespace android::hardware;
+
+    LOG(INFO) << toString(IFoo::Everything{});
+
+    // Note that handles don't need to be deleted because MQDescriptor takes ownership
+    // and deletes them when destructed.
+    auto handle = native_handle_create(0, 1);
+    auto handle2 = native_handle_create(0, 1);
+    handle->data[0] = 5;
+    handle2->data[0] = 6;
+    IFoo::Everything e {
+        .u = {.p = reinterpret_cast<void *>(0x5)},
+        .number = 10,
+        .h = handle,
+        .descSync = {std::vector<GrantorDescriptor>(), handle, 5},
+        .descUnsync = {std::vector<GrantorDescriptor>(), handle2, 6},
+        .mem = hidl_memory("mymem", handle, 5),
+        .p = reinterpret_cast<void *>(0x6),
+        .vs = {"hello", "world"},
+        .multidimArray = hidl_vec<hidl_string>{"hello", "great", "awesome", "nice"}.data(),
+        .sArray = hidl_vec<hidl_string>{"awesome", "thanks", "you're welcome"}.data(),
+        .anotherStruct = {.first = "first", .last = "last"},
+        .bf = IFoo::BitField::V0 | IFoo::BitField::V2
+    };
+    LOG(INFO) << toString(e);
+    LOG(INFO) << toString(foo);
+    // toString is for debugging purposes only; no good EXPECT
+    // statement can be written here.
+}
+
 TEST_F(HidlTest, ServiceListTest) {
     static const std::set<std::string> binderizedSet = {
         "android.hardware.tests.pointer@1.0::IPointer/pointer",
@@ -702,6 +795,24 @@ TEST_F(HidlTest, TestSharedMemory) {
     }
 }
 
+TEST_F(HidlTest, NullSharedMemory) {
+    hidl_memory memory{};
+
+    EXPECT_EQ(nullptr, memory.handle());
+
+    EXPECT_OK(memoryTest->haveSomeMemory(memory, [&](const hidl_memory &mem) {
+        EXPECT_EQ(nullptr, mem.handle());
+    }));
+}
+
+TEST_F(HidlTest, FooGetDescriptorTest) {
+    EXPECT_OK(foo->interfaceDescriptor([&] (const auto &desc) {
+        EXPECT_EQ(desc, gMode == BINDERIZED
+                ? IBar::descriptor // service is actually IBar in binderized mode
+                : IFoo::descriptor); // dlopened, so service is IFoo
+    }));
+}
+
 TEST_F(HidlTest, FooDoThisTest) {
     ALOGI("CLIENT call doThis.");
     EXPECT_OK(foo->doThis(1.0f));
@@ -762,20 +873,20 @@ TEST_F(HidlTest, FooMapThisVectorTest) {
 }
 
 TEST_F(HidlTest, WrapTest) {
-    using ::android::hardware::tests::foo::V1_0::BnSimple;
+    using ::android::hardware::tests::foo::V1_0::BnHwSimple;
     using ::android::hardware::tests::foo::V1_0::BsSimple;
-    using ::android::hardware::tests::foo::V1_0::BpSimple;
+    using ::android::hardware::tests::foo::V1_0::BpHwSimple;
     using ::android::hardware::HidlInstrumentor;
     nsecs_t now;
     int i = 0;
 
     now = systemTime();
-    new BnSimple(new Simple(1));
-    EXPECT_LT(systemTime() - now, 2000000) << "    for BnSimple(nonnull)";
+    new BnHwSimple(new Simple(1));
+    EXPECT_LT(systemTime() - now, 2000000) << "    for BnHwSimple(nonnull)";
 
     now = systemTime();
-    new BnSimple(nullptr);
-    EXPECT_LT(systemTime() - now, 2000000) << "    for BnSimple(null)";
+    new BnHwSimple(nullptr);
+    EXPECT_LT(systemTime() - now, 2000000) << "    for BnHwSimple(null)";
 
     now = systemTime();
     new BsSimple(new Simple(1));
@@ -786,8 +897,8 @@ TEST_F(HidlTest, WrapTest) {
     EXPECT_LT(systemTime() - now, 2000000) << "    for BsSimple(null)";
 
     now = systemTime();
-    new BpSimple(nullptr);
-    EXPECT_LT(systemTime() - now, 2000000) << "    for BpSimple(null)";
+    new BpHwSimple(nullptr);
+    EXPECT_LT(systemTime() - now, 2000000) << "    for BpHwSimple(null)";
 
     now = systemTime();
     new ::android::hardware::HidlInstrumentor("");
@@ -1087,16 +1198,13 @@ TEST_F(HidlTest, FooTranspose2Test) {
                 }));
 }
 
-// TODO: enable for passthrough mode after b/30814137
 TEST_F(HidlTest, FooNullNativeHandleTest) {
-    if (gMode == BINDERIZED) {
-        Abc xyz;
-        xyz.z = nullptr;
-        EXPECT_FAIL(bar->expectNullHandle(nullptr, xyz, [](bool hIsNull, bool xyzHasNull) {
-            EXPECT_TRUE(hIsNull);
-            EXPECT_TRUE(xyzHasNull);
-        }));
-    }
+    Abc xyz;
+    xyz.z = nullptr;
+    EXPECT_OK(bar->expectNullHandle(nullptr, xyz, [](bool hIsNull, bool xyzHasNull) {
+        EXPECT_TRUE(hIsNull);
+        EXPECT_TRUE(xyzHasNull);
+    }));
 }
 
 TEST_F(HidlTest, FooNullCallbackTest) {
@@ -1123,6 +1231,16 @@ TEST_F(HidlTest, FooSendVecTest) {
     EXPECT_OK(foo->sendVec(
                 in,
                 [&](const auto &out) {
+                    EXPECT_EQ(to_string(in), to_string(out));
+                }));
+}
+
+TEST_F(HidlTest, FooSendEmptyVecTest) {
+    hidl_vec<uint8_t> in;
+    EXPECT_OK(foo->sendVec(
+                in,
+                [&](const auto &out) {
+                    EXPECT_EQ(out.size(), 0u);
                     EXPECT_EQ(to_string(in), to_string(out));
                 }));
 }

@@ -3,11 +3,13 @@
 genrule {
     name: "tests.vendor@1.0_genc++",
     tools: ["hidl-gen"],
-    cmd: "$(location hidl-gen) -o $(genDir) -Lc++ -rtests:system/tools/hidl/test/ -randroid.hidl:system/libhidl/transport tests.vendor@1.0",
+    cmd: "$(location hidl-gen) -o $(genDir) -Lc++ -randroid.hardware:hardware/interfaces -randroid.hidl:system/libhidl/transport -rtests:system/tools/hidl/test/ tests.vendor@1.0",
     srcs: [
+        "types.hal",
         "IVendor.hal",
     ],
     out: [
+        "tests/vendor/1.0/types.cpp",
         "tests/vendor/1.0/VendorAll.cpp",
     ],
 }
@@ -15,15 +17,17 @@ genrule {
 genrule {
     name: "tests.vendor@1.0_genc++_headers",
     tools: ["hidl-gen"],
-    cmd: "$(location hidl-gen) -o $(genDir) -Lc++ -rtests:system/tools/hidl/test/ -randroid.hidl:system/libhidl/transport tests.vendor@1.0",
+    cmd: "$(location hidl-gen) -o $(genDir) -Lc++ -randroid.hardware:hardware/interfaces -randroid.hidl:system/libhidl/transport -rtests:system/tools/hidl/test/ tests.vendor@1.0",
     srcs: [
+        "types.hal",
         "IVendor.hal",
     ],
     out: [
+        "tests/vendor/1.0/types.h",
         "tests/vendor/1.0/IVendor.h",
         "tests/vendor/1.0/IHwVendor.h",
-        "tests/vendor/1.0/BnVendor.h",
-        "tests/vendor/1.0/BpVendor.h",
+        "tests/vendor/1.0/BnHwVendor.h",
+        "tests/vendor/1.0/BpHwVendor.h",
         "tests/vendor/1.0/BsVendor.h",
     ],
 }
@@ -40,13 +44,13 @@ cc_library_shared {
         "liblog",
         "libutils",
         "libcutils",
-        "android.hidl.base@1.0",
+        "android.hardware.tests.baz@1.0",
     ],
     export_shared_lib_headers: [
         "libhidlbase",
         "libhidltransport",
         "libhwbinder",
         "libutils",
-        "android.hidl.base@1.0",
+        "android.hardware.tests.baz@1.0",
     ],
 }

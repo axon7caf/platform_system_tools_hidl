@@ -89,6 +89,10 @@ struct Interface : public Scope {
             bool isReader,
             ErrorMode mode) const override;
 
+    status_t emitGlobalTypeDeclarations(Formatter &out) const override;
+    status_t emitTypeDefinitions(
+            Formatter &out, const std::string prefix) const override;
+
     void emitJavaReaderWriter(
             Formatter &out,
             const std::string &parcelObj,
@@ -110,9 +114,11 @@ private:
     std::vector<Method *> mReservedMethods;
     mutable bool mIsJavaCompatibleInProgress;
     Method *createDescriptorChainMethod() const;
+    Method *createGetDescriptorMethod() const;
     Method *createSyspropsChangedMethod() const;
     Method *createLinkToDeathMethod() const;
     Method *createUnlinkToDeathMethod() const;
+    Method *createSetHALInstrumentationMethod() const;
 
     DISALLOW_COPY_AND_ASSIGN(Interface);
 };

@@ -144,25 +144,16 @@ void ArrayType::emitReaderWriter(
         parcelObj + (parcelObjIsPointer ? "->" : ".");
 
     if (isReader) {
-
-        out << name
-            << " = ("
-            << getCppResultType()
-            << ")"
+        out << "_hidl_err = "
             << parcelObjDeref
             << "readBuffer(&"
             << parentName
-            << ");\n\n";
+            << ", "
+            << " reinterpret_cast<const void **>("
+            << "&" << name
+            << "));\n\n";
 
-        out << "if (" << name << " == nullptr) {\n";
-
-        out.indent();
-
-        out << "_hidl_err = ::android::UNKNOWN_ERROR;\n";
-        handleError2(out, mode);
-
-        out.unindent();
-        out << "}\n\n";
+        handleError(out, mode);
     } else {
         size_t numArrayElements = 1;
         for (auto size : mSizes) {
@@ -326,7 +317,6 @@ void ArrayType::emitResolveReferencesEmbedded(
 
     out << "}\n\n";
 }
-
 
 bool ArrayType::needsEmbeddedReadWrite() const {
     return mElementType->needsEmbeddedReadWrite();

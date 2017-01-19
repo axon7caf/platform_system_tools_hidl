@@ -149,24 +149,16 @@ void VectorType::emitReaderWriter(
         parcelObj + (parcelObjIsPointer ? "->" : ".");
 
     if (isReader) {
-        out << name
-            << " = (const ::android::hardware::hidl_vec<"
-            << baseType
-            << "> *)"
+        out << "_hidl_err = "
             << parcelObjDeref
             << "readBuffer(&"
             << parentName
-            << ");\n\n";
+            << ", "
+            << " reinterpret_cast<const void **>("
+            << "&" << name
+            << "));\n\n";
 
-        out << "if (" << name << " == nullptr) {\n";
-
-        out.indent();
-
-        out << "_hidl_err = ::android::UNKNOWN_ERROR;\n";
-        handleError2(out, mode);
-
-        out.unindent();
-        out << "}\n\n";
+        handleError(out, mode);
     } else {
         out << "_hidl_err = "
             << parcelObjDeref
@@ -595,7 +587,8 @@ void VectorType::EmitJavaFieldReaderWriterForElementType(
         out << blobName
             << ".handle(),\n"
             << offset
-            << " + 0 /* offsetof(hidl_vec<T>, mBuffer) */);\n\n";
+            << " + 0 /* offsetof(hidl_vec<T>, mBuffer) */,"
+            << "true /* nullable */);\n\n";
 
         out.unindent();
         out.unindent();

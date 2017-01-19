@@ -47,9 +47,11 @@ enum {
     /////////////////// HIDL reserved
     FIRST_HIDL_TRANSACTION  = 0x00f00000,
     HIDL_DESCRIPTOR_CHAIN_TRANSACTION = FIRST_HIDL_TRANSACTION,
+    HIDL_GET_DESCRIPTOR_TRANSACTION,
     HIDL_SYSPROPS_CHANGED_TRANSACTION,
     HIDL_LINK_TO_DEATH_TRANSACTION,
     HIDL_UNLINK_TO_DEATH_TRANSACTION,
+    HIDL_SET_HAL_INSTRUMENTATION_TRANSACTION,
     LAST_HIDL_TRANSACTION   = 0x00ffffff,
 };
 
@@ -58,9 +60,11 @@ Interface::Interface(const char *localName, const Location &location, Interface 
       mSuperType(super),
       mIsJavaCompatibleInProgress(false) {
     mReservedMethods.push_back(createDescriptorChainMethod());
+    mReservedMethods.push_back(createGetDescriptorMethod());
     mReservedMethods.push_back(createSyspropsChangedMethod());
     mReservedMethods.push_back(createLinkToDeathMethod());
     mReservedMethods.push_back(createUnlinkToDeathMethod());
+    mReservedMethods.push_back(createSetHALInstrumentationMethod());
 }
 
 std::string Interface::typeName() const {
@@ -185,11 +189,43 @@ Method *Interface::createSyspropsChangedMethod() const {
     );
 }
 
+Method *Interface::createSetHALInstrumentationMethod() const {
+    return new Method("setHALInstrumentation",
+            new std::vector<TypedVar *>() /*args */,
+            new std::vector<TypedVar *>() /*results */,
+            true /*oneway */,
+            new std::vector<Annotation *>(),
+            HIDL_SET_HAL_INSTRUMENTATION_TRANSACTION,
+            {
+                {IMPL_HEADER,
+                    [this](auto &out) {
+                        // do nothing for base class.
+                        out << "return ::android::hardware::Void();\n";
+                    }
+                },
+                {IMPL_STUB,
+                    [](auto &out) {
+                        out << "configureInstrumentation();\n";
+                    }
+                },
+                {IMPL_PASSTHROUGH,
+                    [](auto &out) {
+                        out << "configureInstrumentation();\n";
+                        out << "return ::android::hardware::Void();\n";
+                    }
+                },
+            }, /*cppImpl */
+            { { IMPL_HEADER, [](auto & /*out*/) { /* javaImpl */
+                // Not support for Java Impl for now.
+            } } } /*javaImpl */
+    );
+}
+
 Method *Interface::createDescriptorChainMethod() const {
     VectorType *vecType = new VectorType();
     vecType->setElementType(new StringType());
     std::vector<TypedVar *> *results = new std::vector<TypedVar *>();
-    results->push_back(new TypedVar("indicator", vecType));
+    results->push_back(new TypedVar("descriptors", vecType));
 
     return new Method("interfaceChain",
         new std::vector<TypedVar *>() /* args */,
@@ -223,6 +259,29 @@ Method *Interface::createDescriptorChainMethod() const {
     );
 }
 
+Method *Interface::createGetDescriptorMethod() const {
+    std::vector<TypedVar *> *results = new std::vector<TypedVar *>();
+    results->push_back(new TypedVar("descriptor", new StringType()));
+
+    return new Method("interfaceDescriptor",
+        new std::vector<TypedVar *>() /* args */,
+        results,
+        false /* oneway */,
+        new std::vector<Annotation *>(),
+        HIDL_GET_DESCRIPTOR_TRANSACTION,
+        { { IMPL_HEADER, [this](auto &out) {
+            out << "_hidl_cb("
+                << fullName()
+                << "::descriptor);\n"
+                << "return ::android::hardware::Void();";
+        } } }, /* cppImpl */
+        { { IMPL_HEADER, [this](auto &out) {
+            out << "return "
+                << fullJavaName()
+                << ".kInterfaceName;\n";
+         } } } /* javaImpl */
+    );
+}
 
 bool Interface::addMethod(Method *method) {
     if (isIBase()) {
@@ -464,6 +523,53 @@ void Interface::emitReaderWriter(
 
         handleError(out, mode);
     }
+}
+
+status_t Interface::emitGlobalTypeDeclarations(Formatter &out) const {
+    status_t status = Scope::emitGlobalTypeDeclarations(out);
+    if (status != OK) {
+        return status;
+    }
+    out << "std::string toString("
+        << getCppArgumentType()
+        << ");\n";
+    return OK;
+}
+
+
+status_t Interface::emitTypeDefinitions(
+        Formatter &out, const std::string prefix) const {
+    std::string space = prefix.empty() ? "" : (prefix + "::");
+    status_t err = Scope::emitTypeDefinitions(out, space + localName());
+    if (err != OK) {
+        return err;
+    }
+
+    out << "std::string toString("
+        << getCppArgumentType()
+        << " o) ";
+
+    out.block([&] {
+        out << "std::string os;\nbool ok = false;\n";
+        // TODO b/34136228 use interfaceDescriptor instead
+        out << "auto ret = o->interfaceChain([&os, &ok] (const auto &chain) ";
+        out.block([&] {
+            out.sIf("chain.size() >= 1", [&] {
+                out << "os += chain[0].c_str();\n"
+                    << "ok = true;\n";
+            }).endl();
+        });
+        out << ");\n";
+        out.sIf("!ret.isOk() || !ok", [&] {
+            out << "os += \"[class or subclass of \";\n"
+                << "os += " << fullName() << "::descriptor;\n"
+                << "os += \"]\";\n";
+        }).endl();
+        out << "os += o->isRemote() ? \"@remote\" : \"@local\";\n"
+            << "return os;\n";
+    }).endl().endl();
+
+    return OK;
 }
 
 void Interface::emitJavaReaderWriter(

@@ -132,26 +132,17 @@ void CompoundType::emitReaderWriter(
         parcelObj + (parcelObjIsPointer ? "->" : ".");
 
     if (isReader) {
-        out << name
-            << " = (const "
-            << fullName()
-            << " *)"
+        out << "_hidl_err = "
             << parcelObjDeref
             << "readBuffer("
             << "&"
             << parentName
-            << ");\n";
+            << ", "
+            << " reinterpret_cast<const void **>("
+            << "&" << name
+            << "));\n";
 
-        out << "if ("
-            << name
-            << " == nullptr) {\n";
-
-        out.indent([&]{
-            out << "_hidl_err = ::android::UNKNOWN_ERROR;\n";
-            handleError2(out, mode);
-        });
-
-        out << "}\n\n";
+        handleError(out, mode);
     } else {
         out << "_hidl_err = "
             << parcelObjDeref
@@ -355,15 +346,71 @@ status_t CompoundType::emitTypeDeclarations(Formatter &out) const {
 
     Scope::emitTypeDeclarations(out);
 
-    for (const auto &field : *mFields) {
-        out << field->type().getCppStackType()
-            << " "
-            << field->name()
-            << ";\n";
+    if (!isJavaCompatible()) {
+        for (const auto &field : *mFields) {
+            out << field->type().getCppStackType()
+                << " "
+                << field->name()
+                << ";\n";
+        }
+
+        out.unindent();
+        out << "};\n\n";
+
+        return OK;
     }
 
-    out.unindent();
-    out << "};\n\n";
+    for (int pass = 0; pass < 2; ++pass) {
+        size_t offset = 0;
+        for (const auto &field : *mFields) {
+            size_t fieldAlign, fieldSize;
+            field->type().getAlignmentAndSize(&fieldAlign, &fieldSize);
+
+            size_t pad = offset % fieldAlign;
+            if (pad > 0) {
+                offset += fieldAlign - pad;
+            }
+
+            if (pass == 0) {
+                out << field->type().getCppStackType()
+                    << " "
+                    << field->name()
+                    << " __attribute__ ((aligned("
+                    << fieldAlign
+                    << ")));\n";
+            } else {
+                out << "static_assert(offsetof("
+                    << fullName()
+                    << ", "
+                    << field->name()
+                    << ") == "
+                    << offset
+                    << ", \"wrong offset\");\n";
+            }
+
+            offset += fieldSize;
+        }
+
+        if (pass == 0) {
+            out.unindent();
+            out << "};\n\n";
+        }
+    }
+
+    size_t structAlign, structSize;
+    getAlignmentAndSize(&structAlign, &structSize);
+
+    out << "static_assert(sizeof("
+        << fullName()
+        << ") == "
+        << structSize
+        << ", \"wrong size\");\n";
+
+    out << "static_assert(__alignof("
+        << fullName()
+        << ") == "
+        << structAlign
+        << ", \"wrong alignment\");\n\n";
 
     return OK;
 }
@@ -371,6 +418,10 @@ status_t CompoundType::emitTypeDeclarations(Formatter &out) const {
 
 status_t CompoundType::emitGlobalTypeDeclarations(Formatter &out) const {
     Scope::emitGlobalTypeDeclarations(out);
+
+    out << "std::string toString("
+        << getCppArgumentType()
+        << ");\n";
 
     if (!canCheckEquality()) {
         return OK;
@@ -458,6 +509,29 @@ status_t CompoundType::emitTypeDefinitions(
         emitResolveReferenceDef(out, prefix, true /* isReader */);
         emitResolveReferenceDef(out, prefix, false /* isReader */);
     }
+
+    out << "std::string toString("
+        << getCppArgumentType()
+        << (mFields->empty() ? "" : " o")
+        << ") ";
+
+    out.block([&] {
+        // include toString for scalar types
+        out << "using ::android::hardware::details::toString;\n"
+            << "std::string os;\n";
+        out << "os += \"{\";\n";
+
+        for (const CompoundField *field : *mFields) {
+            out << "os += \"";
+            if (field != *(mFields->begin())) {
+                out << ", ";
+            }
+            out << "." << field->name() << " = \";\n";
+            field->type().emitDump(out, "os", "o." + field->name());
+        }
+
+        out << "os += \"}\"; return os;\n";
+    }).endl().endl();
 
     return OK;
 }
@@ -973,6 +1047,11 @@ void CompoundType::getAlignmentAndSize(size_t *align, size_t *size) const {
     }
 
     *size = offset;
+
+    if (*size == 0) {
+        // An empty struct still occupies a byte of space in C++.
+        *size = 1;
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
