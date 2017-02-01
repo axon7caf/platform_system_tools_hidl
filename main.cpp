@@ -16,10 +16,10 @@
 
 #include "AST.h"
 #include "Coordinator.h"
-#include "FQName.h"
 #include "Scope.h"
 
 #include <hidl-util/Formatter.h>
+#include <hidl-util/FQName.h>
 #include <hidl-util/StringHelper.h>
 #include <android-base/logging.h>
 #include <set>
@@ -1044,6 +1044,8 @@ static status_t generateAndroidBpForPackage(
         && packageFQName.string() != "android.hardware.memtrack@1.0"
         && packageFQName.string() != "android.hardware.sensors@1.0"
         && packageFQName.string() != "android.hardware.soundtrigger@2.0"
+        && packageFQName.string()
+            != "android.hardware.biometrics.fingerprint@2.1"
         && packageFQName.string()
             != "android.hardware.graphics.allocator@2.0") {
         fprintf(stderr,

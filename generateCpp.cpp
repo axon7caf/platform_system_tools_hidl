@@ -158,44 +158,67 @@ static void implementServiceManagerInteractions(Formatter &out,
         << "::android::sp<" << interfaceName << "> " << interfaceName << "::getService("
         << "const std::string &serviceName, bool getStub) ";
     out.block([&] {
-        out << "::android::sp<" << interfaceName << "> iface;\n"
-            << "const ::android::sp<::android::hidl::manager::V1_0::IServiceManager> sm\n";
-        out.indent(2, [&] {
-            out << "= ::android::hardware::defaultServiceManager();\n";
-        });
-        out.sIf("sm != nullptr && !getStub", [&] {
-            out << "::android::hardware::Return<::android::sp<" << gIBaseFqName.cppName() << ">> ret = \n";
+        out << "::android::sp<" << interfaceName << "> iface = nullptr;\n";
+        out << "::android::vintf::Transport transport = ::android::hardware::getTransportFromManifest(\""
+            << fqName.package() << "\");\n";
+
+        out.sIf("!getStub && "
+                "(transport == ::android::vintf::Transport::HWBINDER || "
+                "transport == ::android::vintf::Transport::TOGGLED || "
+                // TODO(b/34625838): Don't load in passthrough mode
+                "transport == ::android::vintf::Transport::PASSTHROUGH || "
+                "transport == ::android::vintf::Transport::EMPTY)", [&] {
+            out << "const ::android::sp<::android::hidl::manager::V1_0::IServiceManager> sm\n";
             out.indent(2, [&] {
-                out << "sm->get(\"" << package << "::" << interfaceName << "\", serviceName.c_str());\n";
+                out << "= ::android::hardware::defaultServiceManager();\n";
             });
-            out.sIf("ret.isOk()", [&] {
-                out << "iface = " << interfaceName << "::castFrom(ret);\n";
-                out.sIf("iface != nullptr", [&] {
-                    out << "return iface;\n";
+            out.sIf("sm != nullptr", [&] {
+                // TODO(b/34274385) remove sysprop check
+                out.sIf("transport == ::android::vintf::Transport::HWBINDER ||"
+                         "(transport == ::android::vintf::Transport::TOGGLED &&"
+                         " ::android::hardware::details::blockingHalBinderizationEnabled())", [&]() {
+                    out << "::android::hardware::details::waitForHwService("
+                        << interfaceName << "::descriptor" << ", serviceName);\n";
+                }).endl();
+                out << "::android::hardware::Return<::android::sp<" << gIBaseFqName.cppName() << ">> ret = \n";
+                out.indent(2, [&] {
+                    out << "sm->get(" << interfaceName << "::descriptor" << ", serviceName);\n";
+                });
+                out.sIf("ret.isOk()", [&] {
+                    out << "iface = " << interfaceName << "::castFrom(ret);\n";
+                    out.sIf("iface != nullptr", [&] {
+                        out << "return iface;\n";
+                    }).endl();
                 }).endl();
             }).endl();
         }).endl();
-        out << "const int dlMode = RTLD_LAZY;\n";
-        out << "void *handle = nullptr;\n";
-        for (const auto &path : std::vector<std::string>({
-            "HAL_LIBRARY_PATH_ODM", "HAL_LIBRARY_PATH_VENDOR", "HAL_LIBRARY_PATH_SYSTEM"
-        })) {
-            out.sIf("handle == nullptr", [&] {
-                out << "handle = dlopen("
-                    << path << " \"" << package << "-impl.so\", dlMode);\n";
+
+        out.sIf("getStub || "
+                "transport == ::android::vintf::Transport::PASSTHROUGH || "
+                "(transport == ::android::vintf::Transport::TOGGLED &&"
+                " !::android::hardware::details::blockingHalBinderizationEnabled()) ||"
+                "transport == ::android::vintf::Transport::EMPTY", [&] {
+            out << "const ::android::sp<::android::hidl::manager::V1_0::IServiceManager> pm\n";
+            out.indent(2, [&] {
+                out << "= ::android::hardware::getPassthroughServiceManager();\n";
+            });
+
+            out.sIf("pm != nullptr", [&] () {
+                out << "::android::hardware::Return<::android::sp<" << gIBaseFqName.cppName() << ">> ret = \n";
+                out.indent(2, [&] {
+                    out << "pm->get(" << interfaceName << "::descriptor" << ", serviceName);\n";
+                });
+                out.sIf("ret.isOk()", [&] {
+                    out << "::android::sp<" << gIBaseFqName.cppName()
+                        << "> baseInterface = ret;\n";
+                    out.sIf("baseInterface != nullptr", [&]() {
+                        out << "iface = new " << fqName.getInterfacePassthroughName()
+                            << "(" << interfaceName << "::castFrom(baseInterface));\n";
+                    });
+                }).endl();
             }).endl();
-        }
-        out.sIf("handle == nullptr", [&] {
-            out << "return iface;\n";
         }).endl();
-        out << "" << interfaceName << "* (*generator)(const char* name);\n"
-            << "*(void **)(&generator) = dlsym(handle, \"HIDL_FETCH_" << interfaceName << "\");\n";
-        out.sIf("generator", [&] {
-            out << "iface = (*generator)(serviceName.c_str());\n";
-            out.sIf("iface != nullptr", [&] {
-                out << "iface = new " << fqName.getInterfacePassthroughName() << "(iface);\n";
-            }).endl();
-        }).endl();
+
         out << "return iface;\n";
     }).endl().endl();
 
@@ -772,7 +795,8 @@ status_t AST::generateStubHeader(const std::string &outputPath) const {
     out << "explicit "
         << klassName
         << "(const ::android::sp<" << ifaceName << "> &_hidl_impl,"
-        << " const std::string& prefix);"
+        << " const std::string& HidlInstrumentor_package,"
+        << " const std::string& HidlInstrumentor_interface);"
         << "\n\n";
     out << "::android::status_t onTransact(\n";
     out.indent();
@@ -930,6 +954,9 @@ status_t AST::generateAllSource(const std::string &outputPath) const {
     if (isInterface) {
         // This is a no-op for IServiceManager itself.
         out << "#include <android/hidl/manager/1.0/IServiceManager.h>\n";
+
+        // TODO(b/34274385) remove this
+        out << "#include <hidl/LegacySupport.h>\n";
 
         generateCppPackageInclude(out, mPackage, iface->getProxyName());
         generateCppPackageInclude(out, mPackage, iface->getStubName());
@@ -1306,7 +1333,7 @@ status_t AST::generateProxySource(
         << ">(_hidl_impl),\n"
         << "  ::android::hardware::HidlInstrumentor(\""
         << mPackage.string()
-        << "::"
+        << "\", \""
         << fqName.getInterfaceName()
         << "\") {\n";
 
@@ -1344,7 +1371,7 @@ status_t AST::generateStubSource(
     }
 
     out << mPackage.string()
-        << "::"
+        << "\", \""
         << interfaceName
         << "\") { \n";
     out.indent();
@@ -1361,13 +1388,15 @@ status_t AST::generateStubSource(
         out << klassName
             << "::"
             << klassName
-            << "(const ::android::sp<" << interfaceName <<"> &_hidl_impl,"
-            << " const std::string &prefix)\n";
+            << "(const ::android::sp<" << interfaceName << "> &_hidl_impl,"
+            << " const std::string &HidlInstrumentor_package,"
+            << " const std::string &HidlInstrumentor_interface)\n";
 
         out.indent();
         out.indent();
 
-        out << ": ::android::hardware::HidlInstrumentor(prefix) { \n";
+        out << ": ::android::hardware::HidlInstrumentor("
+            << "HidlInstrumentor_package, HidlInstrumentor_interface) {\n";
         out.indent();
         out << "_hidl_mImpl = _hidl_impl;\n";
         out.unindent();
@@ -1828,7 +1857,9 @@ status_t AST::generatePassthroughSource(Formatter &out) const {
         << "(const ::android::sp<"
         << iface->fullName()
         << "> impl) : ::android::hardware::HidlInstrumentor(\""
-        << iface->fqName().string()
+        << mPackage.string()
+        << "\", \""
+        << iface->localName()
         << "\"), mImpl(impl) {";
     if (iface->hasOnewayMethods()) {
         out << "\n";

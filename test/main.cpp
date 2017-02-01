@@ -855,6 +855,7 @@ TEST_F(HidlTest, FooDoStuffAndReturnAStringTest) {
             ALOGI("CLIENT doStuffAndReturnAString returned '%s'.",
                   something.c_str());
             EXPECT_STREQ(something.c_str(), "Hello, world");
+            EXPECT_EQ(strlen("Hello, world"), something.size());
         }));
 }
 
@@ -901,7 +902,7 @@ TEST_F(HidlTest, WrapTest) {
     EXPECT_LT(systemTime() - now, 2000000) << "    for BpHwSimple(null)";
 
     now = systemTime();
-    new ::android::hardware::HidlInstrumentor("");
+    new ::android::hardware::HidlInstrumentor("", "");
     EXPECT_LT(systemTime() - now, 2000000) << "    for HidlInstrumentor";
 
     now = systemTime();
