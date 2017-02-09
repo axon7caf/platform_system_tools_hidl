@@ -159,8 +159,8 @@ static void implementServiceManagerInteractions(Formatter &out,
         << "const std::string &serviceName, bool getStub) ";
     out.block([&] {
         out << "::android::sp<" << interfaceName << "> iface = nullptr;\n";
-        out << "::android::vintf::Transport transport = ::android::hardware::getTransportFromManifest(\""
-            << fqName.package() << "\");\n";
+        out << "::android::vintf::Transport transport = ::android::hardware::getTransport("
+            << interfaceName << "::descriptor);\n";
 
         out.sIf("!getStub && "
                 "(transport == ::android::vintf::Transport::HWBINDER || "
@@ -359,7 +359,6 @@ status_t AST::generateInterfaceHeader(const std::string &outputPath) const {
 
     if (isInterface) {
         const Interface *iface = mRootScope->getInterface();
-        const Interface *superType = iface->superType();
 
         out << "virtual bool isRemote() const ";
         if (!isIBase()) {
@@ -438,8 +437,6 @@ status_t AST::generateInterfaceHeader(const std::string &outputPath) const {
         } else {
             declareServiceManagerInteractions(out, iface->localName());
         }
-
-        out << "private: static int hidlStaticBlock;\n";
     }
 
     if (isInterface) {
@@ -813,6 +810,27 @@ status_t AST::generateStubHeader(const std::string &outputPath) const {
     out.unindent();
     out << "private:\n";
     out.indent();
+
+    status_t err = generateMethods(out, [&](const Method *method, const Interface *iface) {
+        if (!method->isHidlReserved() || !method->overridesCppImpl(IMPL_STUB_IMPL)) {
+            return OK;
+        }
+        const bool returnsValue = !method->results().empty();
+        const TypedVar *elidedReturn = method->canElideCallback();
+
+        if (elidedReturn == nullptr && returnsValue) {
+            out << "using " << method->name() << "_cb = "
+                << iface->fqName().cppName()
+                << "::" << method->name() << "_cb;\n";
+        }
+        method->generateCppSignature(out);
+        out << ";\n";
+        return OK;
+    });
+    if (err != OK) {
+        return err;
+    }
+
     out << "::android::sp<" << ifaceName << "> _hidl_mImpl;\n";
     out.unindent();
     out << "};\n\n";
@@ -990,16 +1008,14 @@ status_t AST::generateAllSource(const std::string &outputPath) const {
             << "::descriptor(\""
             << iface->fqName().string()
             << "\");\n\n";
-
-        out << "int "
-            << iface->localName()
-            << "::hidlStaticBlock = []() -> int {\n";
+        out << "__attribute__((constructor))";
+        out << "static void static_constructor() {\n";
         out.indent([&] {
-            out << "::android::hardware::gBnConstructorMap["
+            out << "::android::hardware::gBnConstructorMap.set("
                 << iface->localName()
-                << "::descriptor]\n";
+                << "::descriptor,\n";
             out.indent(2, [&] {
-                out << "= [](void *iIntf) -> ::android::sp<::android::hardware::IBinder> {\n";
+                out << "[](void *iIntf) -> ::android::sp<::android::hardware::IBinder> {\n";
                 out.indent([&] {
                     out << "return new "
                         << iface->getStubName()
@@ -1007,13 +1023,13 @@ status_t AST::generateAllSource(const std::string &outputPath) const {
                         << iface->localName()
                         << " *>(iIntf));\n";
                 });
-                out << "};\n";
+                out << "});\n";
             });
-            out << "::android::hardware::gBsConstructorMap["
+            out << "::android::hardware::gBsConstructorMap.set("
                 << iface->localName()
-                << "::descriptor]\n";
+                << "::descriptor,\n";
             out.indent(2, [&] {
-                out << "= [](void *iIntf) -> ::android::sp<"
+                out << "[](void *iIntf) -> ::android::sp<"
                     << gIBaseFqName.cppName()
                     << "> {\n";
                 out.indent([&] {
@@ -1023,11 +1039,21 @@ status_t AST::generateAllSource(const std::string &outputPath) const {
                         << iface->localName()
                         << " *>(iIntf));\n";
                 });
-                out << "};\n";
+                out << "});\n";
             });
-            out << "return 1;\n";
         });
-        out << "}();\n\n";
+        out << "};\n\n";
+        out << "__attribute__((destructor))";
+        out << "static void static_destructor() {\n";
+        out.indent([&] {
+            out << "::android::hardware::gBnConstructorMap.erase("
+                << iface->localName()
+                << "::descriptor);\n";
+            out << "::android::hardware::gBsConstructorMap.erase("
+                << iface->localName()
+                << "::descriptor);\n";
+        });
+        out << "};\n\n";
 
         err = generateInterfaceSource(out);
     }
@@ -1406,6 +1432,20 @@ status_t AST::generateStubSource(
         out << "}\n\n";
     }
 
+    status_t err = generateMethods(out, [&](const Method *method, const Interface *) {
+        if (!method->isHidlReserved() || !method->overridesCppImpl(IMPL_STUB_IMPL)) {
+            return OK;
+        }
+        method->generateCppSignature(out, iface->getStubName());
+        out << " ";
+        out.block([&] {
+            method->cppImpl(IMPL_STUB_IMPL, out);
+        }).endl();
+        return OK;
+    });
+    if (err != OK) {
+        return err;
+    }
 
     out << "::android::status_t " << klassName << "::onTransact(\n";
 
@@ -1536,13 +1576,16 @@ status_t AST::generateStubSourceForMethod(
 
     const bool returnsValue = !method->results().empty();
     const TypedVar *elidedReturn = method->canElideCallback();
+    const std::string callee =
+            (method->isHidlReserved() && method->overridesCppImpl(IMPL_STUB_IMPL))
+            ? "this" : "_hidl_mImpl";
 
     if (elidedReturn != nullptr) {
         out << elidedReturn->type().getCppResultType()
             << " _hidl_out_"
             << elidedReturn->name()
             << " = "
-            << "_hidl_mImpl->" << method->name()
+            << callee << "->" << method->name()
             << "(";
 
         bool first = true;
@@ -1595,7 +1638,7 @@ status_t AST::generateStubSourceForMethod(
             out << "bool _hidl_callbackCalled = false;\n\n";
         }
 
-        out << "_hidl_mImpl->" << method->name() << "(";
+        out << callee << "->" << method->name() << "(";
 
         bool first = true;
         for (const auto &arg : method->args()) {
