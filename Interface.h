@@ -114,6 +114,7 @@ private:
     std::vector<Method *> mUserMethods;
     std::vector<Method *> mReservedMethods;
     mutable bool mIsJavaCompatibleInProgress;
+    bool fillPingMethod(Method *method) const;
     bool fillDescriptorChainMethod(Method *method) const;
     bool fillGetDescriptorMethod(Method *method) const;
     bool fillSyspropsChangedMethod(Method *method) const;
@@ -121,6 +122,7 @@ private:
     bool fillUnlinkToDeathMethod(Method *method) const;
     bool fillSetHALInstrumentationMethod(Method *method) const;
     bool fillGetDebugInfoMethod(Method *method) const;
+    bool fillDebugMethod(Method *method) const;
 
     DISALLOW_COPY_AND_ASSIGN(Interface);
 };

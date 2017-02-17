@@ -31,6 +31,9 @@
 
 namespace android {
 
+#define B_PACK_CHARS(c1, c2, c3, c4) \
+         ((((c1)<<24)) | (((c2)<<16)) | (((c3)<<8)) | (c4))
+
 /* It is very important that these values NEVER change. These values
  * must remain unchanged over the lifetime of android. This is
  * because the framework on a device will be updated independently of
@@ -43,17 +46,19 @@ enum {
     // These values are defined in hardware::IBinder.
     /////////////////// User defined transactions
     FIRST_CALL_TRANSACTION  = 0x00000001,
-    LAST_CALL_TRANSACTION   = 0x00efffff,
+    LAST_CALL_TRANSACTION   = 0x0effffff,
     /////////////////// HIDL reserved
-    FIRST_HIDL_TRANSACTION  = 0x00f00000,
-    HIDL_DESCRIPTOR_CHAIN_TRANSACTION = FIRST_HIDL_TRANSACTION,
-    HIDL_GET_DESCRIPTOR_TRANSACTION,
-    HIDL_SYSPROPS_CHANGED_TRANSACTION,
-    HIDL_LINK_TO_DEATH_TRANSACTION,
-    HIDL_UNLINK_TO_DEATH_TRANSACTION,
-    HIDL_SET_HAL_INSTRUMENTATION_TRANSACTION,
-    HIDL_GET_REF_INFO_TRANSACTION,
-    LAST_HIDL_TRANSACTION   = 0x00ffffff,
+    FIRST_HIDL_TRANSACTION  = 0x0f000000,
+    HIDL_PING_TRANSACTION                     = B_PACK_CHARS(0x0f, 'P', 'N', 'G'),
+    HIDL_DESCRIPTOR_CHAIN_TRANSACTION         = B_PACK_CHARS(0x0f, 'C', 'H', 'N'),
+    HIDL_GET_DESCRIPTOR_TRANSACTION           = B_PACK_CHARS(0x0f, 'D', 'S', 'C'),
+    HIDL_SYSPROPS_CHANGED_TRANSACTION         = B_PACK_CHARS(0x0f, 'S', 'Y', 'S'),
+    HIDL_LINK_TO_DEATH_TRANSACTION            = B_PACK_CHARS(0x0f, 'L', 'T', 'D'),
+    HIDL_UNLINK_TO_DEATH_TRANSACTION          = B_PACK_CHARS(0x0f, 'U', 'T', 'D'),
+    HIDL_SET_HAL_INSTRUMENTATION_TRANSACTION  = B_PACK_CHARS(0x0f, 'I', 'N', 'T'),
+    HIDL_GET_REF_INFO_TRANSACTION             = B_PACK_CHARS(0x0f, 'R', 'E', 'F'),
+    HIDL_DEBUG_TRANSACTION                    = B_PACK_CHARS(0x0f, 'D', 'B', 'G'),
+    LAST_HIDL_TRANSACTION   = 0x0fffffff,
 };
 
 Interface::Interface(const char *localName, const Location &location, Interface *super)
@@ -64,6 +69,38 @@ Interface::Interface(const char *localName, const Location &location, Interface 
 
 std::string Interface::typeName() const {
     return "interface " + localName();
+}
+
+bool Interface::fillPingMethod(Method *method) const {
+    if (method->name() != "ping") {
+        return false;
+    }
+
+    method->fillImplementation(
+        HIDL_PING_TRANSACTION,
+        {
+            {IMPL_HEADER,
+                [](auto &out) {
+                    out << "return ::android::hardware::Void();\n";
+                }
+            },
+            {IMPL_STUB_IMPL,
+                [](auto &out) {
+                    out << "return ::android::hardware::Void();\n";
+                }
+            }
+        }, /*cppImpl*/
+        {
+            {IMPL_HEADER,
+                [this](auto &out) {
+                    out << "return;\n";
+                }
+            },
+            {IMPL_STUB, nullptr /* don't generate code */}
+        } /*javaImpl*/
+    );
+
+    return true;
 }
 
 bool Interface::fillLinkToDeathMethod(Method *method) const {
@@ -301,6 +338,30 @@ bool Interface::fillGetDebugInfoMethod(Method *method) const {
     return true;
 }
 
+bool Interface::fillDebugMethod(Method *method) const {
+    if (method->name() != "debug") {
+        return false;
+    }
+
+    method->fillImplementation(
+        HIDL_DEBUG_TRANSACTION,
+        {
+            {IMPL_HEADER,
+                [this](auto &out) {
+                    out << "(void)fd;\n"
+                        << "(void)options;\n"
+                        << "return ::android::hardware::Void();";
+                }
+            },
+        }, /* cppImpl */
+        {
+            /* unused, as the debug method is hidden from Java */
+        } /* javaImpl */
+    );
+
+    return true;
+}
+
 static std::map<std::string, Method *> gAllReservedMethods;
 
 bool Interface::addMethod(Method *method) {
@@ -342,13 +403,16 @@ bool Interface::addAllReservedMethods() {
     std::map<int32_t, Method *> reservedMethodsById;
     for (const auto &pair : gAllReservedMethods) {
         Method *method = pair.second->copySignature();
-        bool fillSuccess = fillDescriptorChainMethod(method)
+        bool fillSuccess = fillPingMethod(method)
+            || fillDescriptorChainMethod(method)
             || fillGetDescriptorMethod(method)
             || fillSyspropsChangedMethod(method)
             || fillLinkToDeathMethod(method)
             || fillUnlinkToDeathMethod(method)
             || fillSetHALInstrumentationMethod(method)
-            || fillGetDebugInfoMethod(method);
+            || fillGetDebugInfoMethod(method)
+            || fillDebugMethod(method);
+
         if (!fillSuccess) {
             LOG(ERROR) << "ERROR: hidl-gen does not recognize a reserved method "
                        << method->name();
@@ -714,10 +778,10 @@ status_t Interface::emitVtsMethodDeclaration(Formatter &out) const {
                     }
                 }
             } else {
-                std::cerr << "Invalid annotation '"
+                std::cerr << "Unrecognized annotation '"
                           << name << "' for method: " << method->name()
-                          << ". Should be one of: entry, exit, callflow. \n";
-                return UNKNOWN_ERROR;
+                          << ". A VTS annotation should be one of: "
+                          << "entry, exit, callflow. \n";
             }
             out.unindent();
             out << "}\n";

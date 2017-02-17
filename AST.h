@@ -116,6 +116,8 @@ struct AST {
 
     bool isIBase() const;
 
+    const Interface *getInterface() const;
+
 private:
     Coordinator *mCoordinator;
     std::string mPath;
@@ -275,12 +277,6 @@ private:
     status_t emitTypeDeclarations(Formatter &out) const;
     status_t emitJavaTypeDeclarations(Formatter &out) const;
     status_t emitVtsTypeDeclarations(Formatter &out) const;
-
-    // Helper function that generates vts type declaration from the current
-    // AST and the transitive closure of imported ASTs.
-    status_t emitVtsTypeDeclarationsHelper(
-            Formatter &out,
-            std::set<AST*> *allImportSet) const;
 
     DISALLOW_COPY_AND_ASSIGN(AST);
 };

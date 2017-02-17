@@ -513,7 +513,8 @@ static status_t generateMakefileForPackage(
             << "-java"
             << staticSuffix
             << "\nLOCAL_MODULE_CLASS := JAVA_LIBRARIES\n\n"
-            << "intermediates := $(local-generated-sources-dir)\n\n"
+            << "intermediates := $(call local-generated-sources-dir, COMMON)"
+            << "\n\n"
             << "HIDL := $(HOST_OUT_EXECUTABLES)/"
             << hidl_gen
             << "$(HOST_EXECUTABLE_SUFFIX)";
@@ -559,7 +560,8 @@ static status_t generateMakefileForPackage(
             << libraryName
             << "-java-constants"
             << "\nLOCAL_MODULE_CLASS := JAVA_LIBRARIES\n\n"
-            << "intermediates := $(local-generated-sources-dir)\n\n"
+            << "intermediates := $(call local-generated-sources-dir, COMMON)"
+            << "\n\n"
             << "HIDL := $(HOST_OUT_EXECUTABLES)/"
             << hidl_gen
             << "$(HOST_EXECUTABLE_SUFFIX)";
@@ -606,6 +608,7 @@ static void generateAndroidBpGenSection(
         const FQName &packageFQName,
         const char *hidl_gen,
         Coordinator *coordinator,
+        const std::string &halFilegroupName,
         const std::string &genName,
         const char *language,
         const std::vector<FQName> &packageInterfaces,
@@ -626,9 +629,7 @@ static void generateAndroidBpGenSection(
 
     out << "srcs: [\n";
     out.indent();
-    for (const auto &fqName : packageInterfaces) {
-        out << "\"" << fqName.name() << ".hal\",\n";
-    }
+    out << "\":" << halFilegroupName << "\",\n";
     out.unindent();
     out << "],\n";
 
@@ -729,6 +730,7 @@ static status_t generateAndroidBpForPackage(
             packageFQName,
             hidl_gen,
             coordinator,
+            halFilegroupName,
             genSourceName,
             "c++",
             packageInterfaces,
@@ -747,6 +749,7 @@ static status_t generateAndroidBpForPackage(
             packageFQName,
             hidl_gen,
             coordinator,
+            halFilegroupName,
             genHeaderName,
             "c++",
             packageInterfaces,
