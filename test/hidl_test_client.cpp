@@ -1,4 +1,4 @@
-#define LOG_TAG "hidl_test"
+#define LOG_TAG "hidl_test_client"
 
 #include "FooCallback.h"
 
@@ -19,6 +19,7 @@
 #include <android/hardware/tests/bar/1.0/IBar.h>
 #include <android/hardware/tests/bar/1.0/IComplicated.h>
 #include <android/hardware/tests/bar/1.0/IImportRules.h>
+#include <android/hardware/tests/baz/1.0/IBaz.h>
 #include <android/hardware/tests/inheritance/1.0/IFetcher.h>
 #include <android/hardware/tests/inheritance/1.0/IGrandparent.h>
 #include <android/hardware/tests/inheritance/1.0/IParent.h>
@@ -54,8 +55,6 @@
 #include <hidl/Status.h>
 #include <hidlmemory/mapping.h>
 
-#include <hwbinder/IPCThreadState.h>
-
 #include <utils/Condition.h>
 #include <utils/Timers.h>
 
@@ -67,19 +66,15 @@
 //#define HIDL_RUN_POINTER_TESTS 1
 
 // forward declarations.
-class PassthroughEnvironment;
-class BinderizedEnvironment;
+class HidlEnvironment;
 
 // static storage
-static enum TestMode {
+enum TestMode {
     BINDERIZED,
     PASSTHROUGH
-} gMode;
-static PassthroughEnvironment *gPassthroughEnvironment = nullptr;
-static BinderizedEnvironment *gBinderizedEnvironment = nullptr;
-// per process tag
-static std::string gServiceName;
-// end static storage
+};
+
+static HidlEnvironment *gHidlEnvironment = nullptr;
 
 using ::android::hardware::tests::foo::V1_0::Abc;
 using ::android::hardware::tests::foo::V1_0::IFoo;
@@ -88,6 +83,7 @@ using ::android::hardware::tests::foo::V1_0::ISimple;
 using ::android::hardware::tests::foo::V1_0::implementation::FooCallback;
 using ::android::hardware::tests::bar::V1_0::IBar;
 using ::android::hardware::tests::bar::V1_0::IComplicated;
+using ::android::hardware::tests::baz::V1_0::IBaz;
 using ::android::hardware::tests::inheritance::V1_0::IFetcher;
 using ::android::hardware::tests::inheritance::V1_0::IGrandparent;
 using ::android::hardware::tests::inheritance::V1_0::IParent;
@@ -95,11 +91,8 @@ using ::android::hardware::tests::inheritance::V1_0::IChild;
 using ::android::hardware::tests::pointer::V1_0::IGraph;
 using ::android::hardware::tests::pointer::V1_0::IPointer;
 using ::android::hardware::tests::memory::V1_0::IMemoryTest;
-using ::android::hardware::IPCThreadState;
 using ::android::hardware::Return;
 using ::android::hardware::Void;
-using ::android::hardware::configureRpcThreadpool;
-using ::android::hardware::joinRpcThreadpool;
 using ::android::hardware::hidl_array;
 using ::android::hardware::hidl_death_recipient;
 using ::android::hardware::hidl_memory;
@@ -194,6 +187,27 @@ struct Simple : public ISimple {
 
 private:
     int32_t mCookie;
+};
+
+struct SimpleParent : public IParent {
+    Return<void> doGrandparent() override {
+        return Void();
+    }
+    Return<void> doParent() override {
+        return Void();
+    }
+};
+
+struct SimpleChild : public IChild {
+    Return<void> doGrandparent() override {
+        return Void();
+    }
+    Return <void> doParent() override {
+        return Void();
+    }
+    Return <void> doChild() override {
+        return Void();
+    }
 };
 
 struct Complicated : public IComplicated {
@@ -323,63 +337,7 @@ private:
     std::vector<std::string> mRegistered{};
 };
 
-void signal_handler(int signal)
-{
-    if (signal == SIGTERM) {
-        ALOGD("SERVER %s shutting down...", gServiceName.c_str());
-        IPCThreadState::shutdown();
-        ALOGD("SERVER %s shutdown.", gServiceName.c_str());
-        exit(0);
-    }
-}
-
-template <class T>
-static pid_t forkServer(const std::string &serviceName) {
-    pid_t pid;
-
-    // use fork to create and kill to destroy server processes.
-    // getStub = true to get the passthrough version as the backend for the
-    // binderized service.
-    if ((pid = fork()) == 0) {
-        // in child process
-        configureRpcThreadpool(1, true /*callerWillJoin*/);
-        sp<T> server = T::getService(serviceName, true);
-        gServiceName = serviceName;
-        signal(SIGTERM, signal_handler);
-        ALOGD("SERVER registering %s", serviceName.c_str());
-        ::android::status_t status = server->registerAsService(serviceName);
-        if (status != ::android::OK) {
-            ALOGE("SERVER could not register %s", serviceName.c_str());
-            exit(-1);
-        }
-        ALOGD("SERVER starting %s", serviceName.c_str());
-        joinRpcThreadpool();
-        ALOGD("SERVER %s ends.", serviceName.c_str());
-        exit(0);
-    }
-
-    // in main process
-    return pid;
-}
-
-static void killServer(pid_t pid, const char *serverName) {
-    if(kill(pid, SIGTERM)) {
-        ALOGE("Could not kill %s; errno = %d", serverName, errno);
-    } else {
-        int status;
-        ALOGD("Waiting for %s to exit...", serverName);
-        waitpid(pid, &status, 0);
-        if (status != 0) {
-            ALOGE("%s terminates abnormally with status %d", serverName, status);
-        }
-        ALOGD("Continuing...");
-    }
-}
-
-class HidlEnvironmentBase : public ::testing::Environment {
-protected:
-    std::vector<std::pair<std::string, pid_t>> mPids;
-
+class HidlEnvironment : public ::testing::Environment {
 public:
     sp<IServiceManager> manager;
     sp<ITokenManager> tokenManager;
@@ -387,19 +345,17 @@ public:
     sp<IMemoryTest> memoryTest;
     sp<IFetcher> fetcher;
     sp<IFoo> foo;
-    sp<IFoo> dyingFoo;
+    sp<IBaz> dyingBaz;
     sp<IBar> bar;
     sp<IGraph> graphInterface;
     sp<IPointer> pointerInterface;
     sp<IPointer> validationPointerInterface;
+    TestMode mode;
 
-    template <class T>
-    void addServer(const std::string &name) {
-        mPids.push_back({name, forkServer<T>(name)});
-    }
+    HidlEnvironment(TestMode mode) : mode(mode) {};
 
     void getServices() {
-        manager = IServiceManager::getService("manager");
+        manager = IServiceManager::getService();
 
         // alternatively:
         // manager = defaultServiceManager()
@@ -407,7 +363,7 @@ public:
         ASSERT_NE(manager, nullptr);
         ASSERT_TRUE(manager->isRemote()); // manager is always remote
 
-        tokenManager = ITokenManager::getService("manager");
+        tokenManager = ITokenManager::getService();
         ASSERT_NE(tokenManager, nullptr);
         ASSERT_TRUE(tokenManager->isRemote()); // tokenManager is always remote
 
@@ -418,87 +374,41 @@ public:
         // getStub is true if we are in passthrough mode to skip checking
         // binderized server, false for binderized mode.
 
-        memoryTest = IMemoryTest::getService("memory", gMode == PASSTHROUGH /* getStub */);
+        memoryTest = IMemoryTest::getService("memory", mode == PASSTHROUGH /* getStub */);
         ASSERT_NE(memoryTest, nullptr);
-        ASSERT_EQ(memoryTest->isRemote(), gMode == BINDERIZED);
+        ASSERT_EQ(memoryTest->isRemote(), mode == BINDERIZED);
 
-        fetcher = IFetcher::getService("fetcher", gMode == PASSTHROUGH /* getStub */);
+        fetcher = IFetcher::getService("fetcher", mode == PASSTHROUGH /* getStub */);
         ASSERT_NE(fetcher, nullptr);
-        ASSERT_EQ(fetcher->isRemote(), gMode == BINDERIZED);
+        ASSERT_EQ(fetcher->isRemote(), mode == BINDERIZED);
 
-        foo = IFoo::getService("foo", gMode == PASSTHROUGH /* getStub */);
+        foo = IFoo::getService("foo", mode == PASSTHROUGH /* getStub */);
         ASSERT_NE(foo, nullptr);
-        ASSERT_EQ(foo->isRemote(), gMode == BINDERIZED);
+        ASSERT_EQ(foo->isRemote(), mode == BINDERIZED);
 
-        dyingFoo = IFoo::getService("dyingFoo", gMode == PASSTHROUGH /* getStub */);
+        dyingBaz = IBaz::getService("dyingBaz", mode == PASSTHROUGH /* getStub */);
         ASSERT_NE(foo, nullptr);
-        ASSERT_EQ(foo->isRemote(), gMode == BINDERIZED);
+        ASSERT_EQ(foo->isRemote(), mode == BINDERIZED);
 
-        bar = IBar::getService("foo", gMode == PASSTHROUGH /* getStub */);
+        bar = IBar::getService("foo", mode == PASSTHROUGH /* getStub */);
         ASSERT_NE(bar, nullptr);
-        ASSERT_EQ(bar->isRemote(), gMode == BINDERIZED);
+        ASSERT_EQ(bar->isRemote(), mode == BINDERIZED);
 
-        graphInterface = IGraph::getService("graph", gMode == PASSTHROUGH /* getStub */);
+        graphInterface = IGraph::getService("graph", mode == PASSTHROUGH /* getStub */);
         ASSERT_NE(graphInterface, nullptr);
-        ASSERT_EQ(graphInterface->isRemote(), gMode == BINDERIZED);
+        ASSERT_EQ(graphInterface->isRemote(), mode == BINDERIZED);
 
-        pointerInterface = IPointer::getService("pointer", gMode == PASSTHROUGH /* getStub */);
+        pointerInterface = IPointer::getService("pointer", mode == PASSTHROUGH /* getStub */);
         ASSERT_NE(pointerInterface, nullptr);
-        ASSERT_EQ(pointerInterface->isRemote(), gMode == BINDERIZED);
+        ASSERT_EQ(pointerInterface->isRemote(), mode == BINDERIZED);
 
         // use passthrough mode as the validation object.
         validationPointerInterface = IPointer::getService("pointer", true /* getStub */);
         ASSERT_NE(validationPointerInterface, nullptr);
     }
 
-    void killServer(const char *serverName) {
-        for (const auto &pair : mPids) {
-            if (pair.first == serverName) {
-                ::killServer(pair.second, pair.first.c_str());
-            }
-        }
-    }
-
-    virtual void TearDown() {
-        // clean up by killing server processes.
-        ALOGI("Environment tear-down beginning...");
-        ALOGI("Killing servers...");
-        for (const auto &pair : mPids) {
-            ::killServer(pair.second, pair.first.c_str());
-        }
-        ALOGI("Servers all killed.");
-        ALOGI("Environment tear-down complete.");
-    }
-};
-
-class PassthroughEnvironment : public HidlEnvironmentBase {
-private:
     virtual void SetUp() {
         ALOGI("Environment setup beginning...");
-        // starts this even for passthrough mode.
-        // this is used in Bar's default implementation
-        addServer<IChild>("child");
-        sleep(1);
-        getServices();
-        ALOGI("Environment setup complete.");
-    }
-};
-
-class BinderizedEnvironment : public HidlEnvironmentBase {
-public:
-    virtual void SetUp() {
-        ALOGI("Environment setup beginning...");
-
-        addServer<IMemoryTest>("memory");
-        addServer<IChild>("child");
-        addServer<IParent>("parent");
-        addServer<IFetcher>("fetcher");
-        addServer<IBar>("foo");
-        addServer<IFoo>("dyingFoo");
-        addServer<IGraph>("graph");
-        addServer<IPointer>("pointer");
-
-        sleep(1);
         getServices();
         ALOGI("Environment setup complete.");
     }
@@ -512,41 +422,27 @@ public:
     sp<IMemoryTest> memoryTest;
     sp<IFetcher> fetcher;
     sp<IFoo> foo;
-    sp<IFoo> dyingFoo;
+    sp<IBaz> dyingBaz;
     sp<IBar> bar;
     sp<IGraph> graphInterface;
     sp<IPointer> pointerInterface;
     sp<IPointer> validationPointerInterface;
-
-    void killServer(const char *serverName) {
-        HidlEnvironmentBase *env;
-        if (gMode == BINDERIZED) {
-            env = gBinderizedEnvironment;
-        } else {
-            env = gPassthroughEnvironment;
-        }
-        env->killServer(serverName);
-    }
+    TestMode mode = TestMode::PASSTHROUGH;
 
     virtual void SetUp() override {
         ALOGI("Test setup beginning...");
-        HidlEnvironmentBase *env;
-        if (gMode == BINDERIZED) {
-            env = gBinderizedEnvironment;
-        } else {
-            env = gPassthroughEnvironment;
-        }
-        manager = env->manager;
-        tokenManager = env->tokenManager;
-        ashmemAllocator = env->ashmemAllocator;
-        memoryTest = env->memoryTest;
-        fetcher = env->fetcher;
-        foo = env->foo;
-        dyingFoo = env->dyingFoo;
-        bar = env->bar;
-        graphInterface = env->graphInterface;
-        pointerInterface = env->pointerInterface;
-        validationPointerInterface = env->validationPointerInterface;
+        manager = gHidlEnvironment->manager;
+        tokenManager = gHidlEnvironment->tokenManager;
+        ashmemAllocator = gHidlEnvironment->ashmemAllocator;
+        memoryTest = gHidlEnvironment->memoryTest;
+        fetcher = gHidlEnvironment->fetcher;
+        foo = gHidlEnvironment->foo;
+        dyingBaz = gHidlEnvironment->dyingBaz;
+        bar = gHidlEnvironment->bar;
+        graphInterface = gHidlEnvironment->graphInterface;
+        pointerInterface = gHidlEnvironment->pointerInterface;
+        validationPointerInterface = gHidlEnvironment->validationPointerInterface;
+        mode = gHidlEnvironment->mode;
         ALOGI("Test setup complete");
     }
 };
@@ -582,6 +478,22 @@ TEST_F(HidlTest, ToStringTest) {
     // statement can be written here.
 }
 
+TEST_F(HidlTest, EnumToStringTest) {
+    using namespace std::string_literals;
+    using ::android::hardware::tests::foo::V1_0::toString;
+    // toString for enum
+    EXPECT_EQ(toString(IFoo::BitField::V0), "V0"s);
+    EXPECT_EQ(toString(static_cast<IFoo::BitField>(0)), "0"s)
+            << "Invalid enum isn't stringified correctly.";
+    EXPECT_EQ(toString(static_cast<IFoo::BitField>(IFoo::BitField::V0 | IFoo::BitField::V2)), "0x5"s)
+            << "Invalid enum isn't stringified correctly.";
+    // dump bitfields
+    EXPECT_EQ(toString<IFoo::BitField>(0 | IFoo::BitField::V0), "V0 (0x1)"s);
+    EXPECT_EQ(toString<IFoo::BitField>(0 | IFoo::BitField::V0 | IFoo::BitField::V2), "V0 | V2 (0x5)"s);
+    EXPECT_EQ(toString<IFoo::BitField>(0xF), "V0 | V1 | V2 | V3 | VALL (0xf)"s);
+    EXPECT_EQ(toString<IFoo::BitField>(0xFF), "V0 | V1 | V2 | V3 | VALL | 0xf0 (0xff)"s);
+}
+
 TEST_F(HidlTest, PingTest) {
     EXPECT_OK(manager->ping());
 }
@@ -597,16 +509,16 @@ TEST_F(HidlTest, ServiceListTest) {
         "android.hardware.tests.pointer@1.0::IGraph/graph",
         "android.hardware.tests.inheritance@1.0::IGrandparent/child",
         "android.hardware.tests.foo@1.0::IFoo/foo",
-        "android.hidl.manager@1.0::IServiceManager/manager",
+        "android.hidl.manager@1.0::IServiceManager/default",
     };
 
     static const std::set<std::string> passthroughSet = {
-        "android.hidl.manager@1.0::IServiceManager/manager"
+        "android.hidl.manager@1.0::IServiceManager/default"
     };
 
     std::set<std::string> activeSet;
 
-    switch(gMode) {
+    switch(mode) {
         case BINDERIZED: {
             activeSet = binderizedSet;
         } break;
@@ -636,7 +548,7 @@ TEST_F(HidlTest, ServiceListTest) {
 
 // passthrough TODO(b/32747392)
 TEST_F(HidlTest, ServiceListByInterfaceTest) {
-    if (gMode == BINDERIZED) {
+    if (mode == BINDERIZED) {
         EXPECT_OK(manager->listByInterface(IParent::descriptor,
             [](const hidl_vec<hidl_string> &registered) {
                 std::set<std::string> registeredSet;
@@ -660,7 +572,7 @@ TEST_F(HidlTest, ServiceListByInterfaceTest) {
 
 // passthrough TODO(b/32747392)
 TEST_F(HidlTest, ServiceParentTest) {
-    if (gMode == BINDERIZED) {
+    if (mode == BINDERIZED) {
         sp<IParent> parent = IParent::getService("child");
 
         EXPECT_NE(parent, nullptr);
@@ -669,14 +581,14 @@ TEST_F(HidlTest, ServiceParentTest) {
 
 // passthrough TODO(b/32747392)
 TEST_F(HidlTest, ServiceNotificationTest) {
-    if (gMode == BINDERIZED) {
+    if (mode == BINDERIZED) {
         ServiceNotification *notification = new ServiceNotification();
 
         std::string instanceName = "test-instance";
-        EXPECT_TRUE(ISimple::registerForNotifications(instanceName, notification));
+        EXPECT_TRUE(IParent::registerForNotifications(instanceName, notification));
 
-        Simple* instance = new Simple(1);
-        EXPECT_EQ(::android::OK, instance->registerAsService(instanceName));
+        EXPECT_EQ(::android::OK, (new SimpleChild())->registerAsService(instanceName));
+        EXPECT_EQ(::android::OK, (new SimpleParent())->registerAsService(instanceName));
 
         std::unique_lock<std::mutex> lock(notification->mutex);
 
@@ -684,21 +596,22 @@ TEST_F(HidlTest, ServiceNotificationTest) {
                 lock,
                 std::chrono::milliseconds(2),
                 [&notification]() {
-                   return notification->getRegistrations().size() >= 1;
+                   return notification->getRegistrations().size() >= 2;
                 });
 
         std::vector<std::string> registrations = notification->getRegistrations();
 
-        EXPECT_EQ(registrations.size(), 1u);
+        EXPECT_EQ(registrations.size(), 2u);
 
         EXPECT_EQ(to_string(registrations.data(), registrations.size()),
-                  std::string("['") + Simple::descriptor + "/" + instanceName + "']");
+                  std::string("['") + IParent::descriptor + "/" + instanceName +
+                             "', '" + IParent::descriptor + "/" + instanceName + "']");
     }
 }
 
 // passthrough TODO(b/32747392)
 TEST_F(HidlTest, ServiceAllNotificationTest) {
-    if (gMode == BINDERIZED) {
+    if (mode == BINDERIZED) {
         ServiceNotification *notification = new ServiceNotification();
 
         std::string instanceOne = "test-instance-one";
@@ -795,6 +708,23 @@ TEST_F(HidlTest, TestSharedMemory) {
     for (size_t i = 0; i < mem_copy.size(); i++) {
         EXPECT_EQ(kValue, data[i]);
     }
+
+    hidl_memory mem_move(std::move(mem_copy));
+    ASSERT_EQ(nullptr, mem_copy.handle());
+    ASSERT_EQ(0UL, mem_copy.size());
+    ASSERT_EQ("", mem_copy.name());
+
+    memory.clear();
+    memory = mapMemory(mem_move);
+
+    EXPECT_NE(memory, nullptr);
+
+    data = static_cast<uint8_t*>(static_cast<void*>(memory->getPointer()));
+    EXPECT_NE(data, nullptr);
+
+    for (size_t i = 0; i < mem_move.size(); i++) {
+        EXPECT_EQ(kValue, data[i]);
+    }
 }
 
 TEST_F(HidlTest, NullSharedMemory) {
@@ -809,7 +739,7 @@ TEST_F(HidlTest, NullSharedMemory) {
 
 TEST_F(HidlTest, FooGetDescriptorTest) {
     EXPECT_OK(foo->interfaceDescriptor([&] (const auto &desc) {
-        EXPECT_EQ(desc, gMode == BINDERIZED
+        EXPECT_EQ(desc, mode == BINDERIZED
                 ? IBar::descriptor // service is actually IBar in binderized mode
                 : IFoo::descriptor); // dlopened, so service is IFoo
     }));
@@ -1281,9 +1211,8 @@ TEST_F(HidlTest, FooHaveAVectorOfGenericInterfacesTest) {
                 [&](const auto &out) {
                     EXPECT_EQ(in.size(), out.size());
 
-                    EXPECT_OK(out[0]->interfaceChain([](const auto &names) {
-                        ASSERT_GT(names.size(), 0u);
-                        ASSERT_STREQ(names[0].c_str(), ISimple::descriptor);
+                    EXPECT_OK(out[0]->interfaceDescriptor([](const auto &name) {
+                        ASSERT_STREQ(name.c_str(), ISimple::descriptor);
                     }));
                     for (size_t i = 0; i < in.size(); ++i) {
                         sp<ISimple> inSimple = ISimple::castFrom(in[i]);
@@ -1347,19 +1276,22 @@ TEST_F(HidlTest, DeathRecipientTest) {
     sp<HidlDeathRecipient> recipient = new HidlDeathRecipient();
     sp<HidlDeathRecipient> recipient2 = new HidlDeathRecipient();
 
-    EXPECT_TRUE(dyingFoo->linkToDeath(recipient, 0x1481));
-    EXPECT_TRUE(dyingFoo->linkToDeath(recipient2, 0x2592));
-    EXPECT_TRUE(dyingFoo->unlinkToDeath(recipient2));
+    EXPECT_TRUE(dyingBaz->linkToDeath(recipient, 0x1481));
+    EXPECT_TRUE(dyingBaz->linkToDeath(recipient2, 0x2592));
+    EXPECT_TRUE(dyingBaz->unlinkToDeath(recipient2));
 
-    if (gMode != BINDERIZED) {
+    if (mode != BINDERIZED) {
         // Passthrough doesn't fire, nor does it keep state of
         // registered death recipients (so it won't fail unlinking
         // the same recipient twice).
         return;
     }
 
-    EXPECT_FALSE(dyingFoo->unlinkToDeath(recipient2));
-    killServer("dyingFoo");
+    EXPECT_FALSE(dyingBaz->unlinkToDeath(recipient2));
+    auto ret = dyingBaz->dieNow();
+    if (!ret.isOk()) {
+        //do nothing, this is expected
+    }
 
     std::unique_lock<std::mutex> lock(recipient->mutex);
     recipient->condition.wait_for(lock, std::chrono::milliseconds(1000), [&recipient]() {
@@ -1367,7 +1299,7 @@ TEST_F(HidlTest, DeathRecipientTest) {
     });
     EXPECT_TRUE(recipient->fired);
     EXPECT_EQ(recipient->cookie, 0x1481u);
-    EXPECT_EQ(recipient->who, dyingFoo);
+    EXPECT_EQ(recipient->who, dyingBaz);
     std::unique_lock<std::mutex> lock2(recipient2->mutex);
     recipient2->condition.wait_for(lock2, std::chrono::milliseconds(1000), [&recipient2]() {
             return recipient2->fired;
@@ -1375,10 +1307,10 @@ TEST_F(HidlTest, DeathRecipientTest) {
     EXPECT_FALSE(recipient2->fired);
 
     // Verify servicemanager dropped its reference too
-    sp<IFoo> deadFoo = IFoo::getService("dyingFoo", false);
-    if (deadFoo != nullptr) {
+    sp<IBaz> deadBaz = IBaz::getService("dyingBaz", false);
+    if (deadBaz != nullptr) {
         // Got a passthrough
-        EXPECT_FALSE(deadFoo->isRemote());
+        EXPECT_FALSE(deadBaz->isRemote());
     }
 }
 
@@ -1419,11 +1351,11 @@ TEST_F(HidlTest, FooHaveAnInterfaceTest) {
     sp<ISimple> out = ret;
     ASSERT_NE(out.get(), nullptr);
     EXPECT_EQ(out->getCookie(), 42);
-    EXPECT_OK(out->customVecInt([&](const auto &) { }));
-    EXPECT_OK(out->customVecStr([&](const auto &) { }));
-    EXPECT_OK(out->interfaceChain([&](const auto &) { }));
-    EXPECT_OK(out->mystr([&](const auto &) { }));
-    EXPECT_OK(out->myhandle([&](const auto &) { }));
+    EXPECT_OK(out->customVecInt([](const auto &) { }));
+    EXPECT_OK(out->customVecStr([](const auto &) { }));
+    EXPECT_OK(out->ping());
+    EXPECT_OK(out->mystr([](const auto &) { }));
+    EXPECT_OK(out->myhandle([](const auto &) { }));
 }
 
 TEST_F(HidlTest, InheritRemoteGrandparentTest) {
@@ -1816,14 +1748,8 @@ int forkAndRunTests(TestMode mode) {
     fflush(stdout);
 
     if ((child = fork()) == 0) {
-        gMode = mode;
-        if (gMode == PASSTHROUGH) {
-            gPassthroughEnvironment = static_cast<PassthroughEnvironment *>(
-                ::testing::AddGlobalTestEnvironment(new PassthroughEnvironment));
-        } else if (gMode == BINDERIZED) {
-            gBinderizedEnvironment = static_cast<BinderizedEnvironment *>(
-                ::testing::AddGlobalTestEnvironment(new BinderizedEnvironment));
-        }
+        gHidlEnvironment = static_cast<HidlEnvironment *>(
+                ::testing::AddGlobalTestEnvironment(new HidlEnvironment(mode)));
         int testStatus = RUN_ALL_TESTS();
         if(testStatus == 0) {
             exit(0);
@@ -1920,5 +1846,5 @@ int main(int argc, char **argv) {
     }
     fprintf(stdout, "\n=========================================================\n\n");
 
-    return pStatus + bStatus;
+    return pStatus + bStatus != 0;
 }

@@ -307,19 +307,36 @@ bool Interface::fillGetDebugInfoMethod(Method *method) const {
         return false;
     }
 
+    static const std::string sArch =
+            "#if defined(__LP64__)\n"
+            "::android::hidl::base::V1_0::DebugInfo::Architecture::IS_64BIT\n"
+            "#else\n"
+            "::android::hidl::base::V1_0::DebugInfo::Architecture::IS_32BIT\n"
+            "#endif\n";
+
     method->fillImplementation(
         HIDL_GET_REF_INFO_TRANSACTION,
         {
             {IMPL_HEADER,
                 [this](auto &out) {
                     // getDebugInfo returns N/A for local objects.
-                    out << "_hidl_cb({ -1 /* pid */, 0 /* ptr */ });\n"
+                    out << "_hidl_cb({ -1 /* pid */, 0 /* ptr */, \n"
+                        << sArch
+                        << "});\n"
                         << "return ::android::hardware::Void();";
                 }
             },
             {IMPL_STUB_IMPL,
                 [this](auto &out) {
-                    out << "_hidl_cb({ getpid(), reinterpret_cast<uint64_t>(this) });\n"
+                    out << "_hidl_cb(";
+                    out.block([&] {
+                        out << "::android::hardware::details::debuggable()"
+                            << "? getpid() : -1 /* pid */,\n"
+                            << "::android::hardware::details::debuggable()"
+                            << "? reinterpret_cast<uint64_t>(this) : 0 /* ptr */,\n"
+                            << sArch << "\n";
+                    });
+                    out << ");\n"
                         << "return ::android::hardware::Void();";
                 }
             }
@@ -331,6 +348,7 @@ bool Interface::fillGetDebugInfoMethod(Method *method) const {
                 // TODO(b/34777099): PID for java.
                 << "info.pid = -1;\n"
                 << "info.ptr = 0;\n"
+                << "info.arch = android.hidl.base.V1_0.DebugInfo.Architecture.UNKNOWN;"
                 << "return info;";
         } } } /* javaImpl */
     );
@@ -669,17 +687,13 @@ status_t Interface::emitTypeDefinitions(
         << " o) ";
 
     out.block([&] {
-        out << "std::string os;\nbool ok = false;\n";
-        // TODO b/34136228 use interfaceDescriptor instead
-        out << "auto ret = o->interfaceChain([&os, &ok] (const auto &chain) ";
+        out << "std::string os;\n";
+        out << "auto ret = o->interfaceDescriptor([&os] (const auto &name) ";
         out.block([&] {
-            out.sIf("chain.size() >= 1", [&] {
-                out << "os += chain[0].c_str();\n"
-                    << "ok = true;\n";
-            }).endl();
+            out << "os += name.c_str();\n";
         });
         out << ");\n";
-        out.sIf("!ret.isOk() || !ok", [&] {
+        out.sIf("!ret.isOk()", [&] {
             out << "os += \"[class or subclass of \";\n"
                 << "os += " << fullName() << "::descriptor;\n"
                 << "os += \"]\";\n";
