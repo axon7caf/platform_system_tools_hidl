@@ -536,7 +536,7 @@ static void wrapPassthroughArg(Formatter &out,
         out << wrappedName
             << " = "
             << iface.fqName().cppName()
-            << "::castFrom(::android::hardware::wrapPassthrough("
+            << "::castFrom(::android::hardware::details::wrapPassthrough("
             << name << "));\n";
         out.sIf(wrappedName + " == nullptr", [&] {
             // Fatal error. Happens when the BsFoo class is not found in the binary
@@ -998,7 +998,7 @@ status_t AST::generateAllSource(const std::string &outputPath) const {
         out << "__attribute__((constructor))";
         out << "static void static_constructor() {\n";
         out.indent([&] {
-            out << "::android::hardware::gBnConstructorMap.set("
+            out << "::android::hardware::details::gBnConstructorMap.set("
                 << iface->localName()
                 << "::descriptor,\n";
             out.indent(2, [&] {
@@ -1012,7 +1012,7 @@ status_t AST::generateAllSource(const std::string &outputPath) const {
                 });
                 out << "});\n";
             });
-            out << "::android::hardware::gBsConstructorMap.set("
+            out << "::android::hardware::details::gBsConstructorMap.set("
                 << iface->localName()
                 << "::descriptor,\n";
             out.indent(2, [&] {
@@ -1033,10 +1033,10 @@ status_t AST::generateAllSource(const std::string &outputPath) const {
         out << "__attribute__((destructor))";
         out << "static void static_destructor() {\n";
         out.indent([&] {
-            out << "::android::hardware::gBnConstructorMap.erase("
+            out << "::android::hardware::details::gBnConstructorMap.erase("
                 << iface->localName()
                 << "::descriptor);\n";
-            out << "::android::hardware::gBsConstructorMap.erase("
+            out << "::android::hardware::details::gBsConstructorMap.erase("
                 << iface->localName()
                 << "::descriptor);\n";
         });
@@ -1855,7 +1855,7 @@ status_t AST::generateInterfaceSource(Formatter &out) const {
         if (iface == superType) {
             out << "return parent;\n";
         } else {
-            out << "return ::android::hardware::castInterface<";
+            out << "return ::android::hardware::details::castInterface<";
             out << iface->localName() << ", "
                 << superType->fqName().cppName() << ", "
                 << iface->getProxyName() << ", "
