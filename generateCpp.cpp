@@ -125,20 +125,28 @@ void AST::enterLeaveNamespace(Formatter &out, bool enter) const {
     }
 }
 
-static void declareServiceManagerInteractions(Formatter &out, const std::string &interfaceName) {
-    out << "static ::android::sp<" << interfaceName << "> getService("
+static void declareGetService(Formatter &out, const std::string &interfaceName, bool isTry) {
+    const std::string functionName = isTry ? "tryGetService" : "getService";
+
+    out << "static ::android::sp<" << interfaceName << "> " << functionName << "("
         << "const std::string &serviceName=\"default\", bool getStub=false);\n";
-    out << "static ::android::sp<" << interfaceName << "> getService("
+    out << "static ::android::sp<" << interfaceName << "> " << functionName << "("
         << "const char serviceName[], bool getStub=false)"
         << "  { std::string str(serviceName ? serviceName : \"\");"
-        << "      return getService(str, getStub); }\n";
-    out << "static ::android::sp<" << interfaceName << "> getService("
+        << "      return " << functionName << "(str, getStub); }\n";
+    out << "static ::android::sp<" << interfaceName << "> " << functionName << "("
         << "const ::android::hardware::hidl_string& serviceName, bool getStub=false)"
         // without c_str the std::string constructor is ambiguous
         << "  { std::string str(serviceName.c_str());"
-        << "      return getService(str, getStub); }\n";
-    out << "static ::android::sp<" << interfaceName << "> getService("
-        << "bool getStub) { return getService(\"default\", getStub); }\n";
+        << "      return " << functionName << "(str, getStub); }\n";
+    out << "static ::android::sp<" << interfaceName << "> " << functionName << "("
+        << "bool getStub) { return " << functionName << "(\"default\", getStub); }\n";
+}
+
+static void declareServiceManagerInteractions(Formatter &out, const std::string &interfaceName) {
+    declareGetService(out, interfaceName, true /* isTry */);
+    declareGetService(out, interfaceName, false /* isTry */);
+
     out << "::android::status_t registerAsService(const std::string &serviceName=\"default\");\n";
     out << "static bool registerForNotifications(\n";
     out.indent(2, [&] {
@@ -149,53 +157,106 @@ static void declareServiceManagerInteractions(Formatter &out, const std::string 
 
 }
 
-static void implementServiceManagerInteractions(Formatter &out,
-        const FQName &fqName, const std::string &package) {
+static void implementGetService(Formatter &out,
+        const FQName &fqName,
+        bool isTry) {
 
     const std::string interfaceName = fqName.getInterfaceName();
+    const std::string functionName = isTry ? "tryGetService" : "getService";
 
     out << "// static\n"
-        << "::android::sp<" << interfaceName << "> " << interfaceName << "::getService("
-        << "const std::string &serviceName, bool getStub) ";
+        << "::android::sp<" << interfaceName << "> " << interfaceName << "::" << functionName << "("
+        << "const std::string &serviceName, const bool getStub) ";
     out.block([&] {
         out << "::android::sp<" << interfaceName << "> iface = nullptr;\n";
         out << "::android::vintf::Transport transport = ::android::hardware::getTransport("
             << interfaceName << "::descriptor, serviceName);\n";
 
-        out.sIf("!getStub && "
-                "(transport == ::android::vintf::Transport::HWBINDER || "
-                "transport == ::android::vintf::Transport::TOGGLED || "
-                "transport == ::android::vintf::Transport::EMPTY)", [&] {
+        // TODO(b/34274385) remove sysprop check
+        out << "const bool vintfHwbinder = (transport == ::android::vintf::Transport::HWBINDER) ||\n"
+            << "                           (transport == ::android::vintf::Transport::TOGGLED &&\n"
+            << "                            ::android::hardware::details::blockingHalBinderizationEnabled());\n"
+            << "const bool vintfPassthru = (transport == ::android::vintf::Transport::PASSTHROUGH) ||\n"
+            << "                           (transport == ::android::vintf::Transport::TOGGLED &&\n"
+            << "                            !::android::hardware::details::blockingHalBinderizationEnabled());\n"
+            << "const bool vintfEmpty    = (transport == ::android::vintf::Transport::EMPTY);\n\n";
+
+        // if (getStub) {
+        //     getPassthroughServiceManager()->get only once.
+        // } else {
+        //     if (vintfHwbinder) {
+        //         while (no alive service) {
+        //             waitForHwService
+        //             defaultServiceManager()->get
+        //         }
+        //     } else if (vintfEmpty) {
+        //         defaultServiceManager()->get only once.
+        //         getPassthroughServiceManager()->get only once.
+        //     } else if (vintfPassthru) {
+        //         getPassthroughServiceManager()->get only once.
+        //     }
+        // }
+
+        out << "bool tried = false;\n";
+        out.sWhile("!getStub && (vintfHwbinder || (vintfEmpty && !tried))", [&] {
+
+            out.sIf("tried", [&] {
+                // sleep only after the first trial.
+                out << "ALOGI(\"getService: retrying in 1s...\");\n"
+                    << "sleep(1);\n";
+            }).endl();
+
+            out << "tried = true;\n";
+
             out << "const ::android::sp<::android::hidl::manager::V1_0::IServiceManager> sm\n";
             out.indent(2, [&] {
                 out << "= ::android::hardware::defaultServiceManager();\n";
             });
-            out.sIf("sm != nullptr", [&] {
-                // TODO(b/34274385) remove sysprop check
-                out.sIf("transport == ::android::vintf::Transport::HWBINDER ||"
-                         "(transport == ::android::vintf::Transport::TOGGLED &&"
-                         " ::android::hardware::details::blockingHalBinderizationEnabled())", [&]() {
+            out.sIf("sm == nullptr", [&] {
+                // hwbinder is not available on this device, so future tries
+                // would also be null. I can only "break" here and
+                // (vintfEmpty) try passthrough or (vintfHwbinder) return nullptr.
+                out << "ALOGE(\"getService: defaultServiceManager() is null\");\n"
+                    << "break;\n";
+            }).endl();
+
+            if (!isTry) {
+                out.sIf("vintfHwbinder", [&] {
                     out << "::android::hardware::details::waitForHwService("
                         << interfaceName << "::descriptor" << ", serviceName);\n";
                 }).endl();
-                out << "::android::hardware::Return<::android::sp<" << gIBaseFqName.cppName() << ">> ret = \n";
-                out.indent(2, [&] {
-                    out << "sm->get(" << interfaceName << "::descriptor" << ", serviceName);\n";
-                });
-                out.sIf("ret.isOk()", [&] {
-                    out << "iface = " << interfaceName << "::castFrom(ret);\n";
-                    out.sIf("iface != nullptr", [&] {
-                        out << "return iface;\n";
-                    }).endl();
-                }).endl();
+            }
+
+            out << "::android::hardware::Return<::android::sp<"
+                << gIBaseFqName.cppName() << ">> ret = \n";
+            out.indent(2, [&] {
+                out << "sm->get(" << interfaceName << "::descriptor, serviceName);\n";
+            });
+
+            out.sIf("!ret.isOk()", [&] {
+                // hwservicemanager fails, may be security issue
+                out << "ALOGE(\"getService: defaultServiceManager()->get returns %s\", "
+                    << "ret.description().c_str());\n"
+                    << "break;\n";
             }).endl();
+
+            out << "iface = " << interfaceName << "::castFrom(ret);\n";
+            out.sIf("iface == nullptr", [&] {
+                // 1. race condition. hwservicemanager drops the service
+                //    from waitForHwService to here
+                // 2. service is dead (castFrom cannot call interfaceChain)
+                // 3. returned service isn't of correct type; this is a bug
+                //    to hwservicemanager or to the service itself (interfaceChain
+                //    is not consistent)
+                // In all cases, try again.
+                out << "ALOGW(\"getService: found null hwbinder interface\");\n"
+                    << "break;\n";
+            }).endl();
+
+            out << "return iface;\n";
         }).endl();
 
-        out.sIf("getStub || "
-                "transport == ::android::vintf::Transport::PASSTHROUGH || "
-                "(transport == ::android::vintf::Transport::TOGGLED &&"
-                " !::android::hardware::details::blockingHalBinderizationEnabled()) ||"
-                "transport == ::android::vintf::Transport::EMPTY", [&] {
+        out.sIf("getStub || vintfPassthru || vintfEmpty", [&] {
             out << "const ::android::sp<::android::hidl::manager::V1_0::IServiceManager> pm\n";
             out.indent(2, [&] {
                 out << "= ::android::hardware::getPassthroughServiceManager();\n";
@@ -212,13 +273,22 @@ static void implementServiceManagerInteractions(Formatter &out,
                     out.sIf("baseInterface != nullptr", [&]() {
                         out << "iface = new " << fqName.getInterfacePassthroughName()
                             << "(" << interfaceName << "::castFrom(baseInterface));\n";
-                    });
+                    }).endl();
                 }).endl();
             }).endl();
         }).endl();
 
         out << "return iface;\n";
     }).endl().endl();
+}
+
+static void implementServiceManagerInteractions(Formatter &out,
+        const FQName &fqName, const std::string &package) {
+
+    const std::string interfaceName = fqName.getInterfaceName();
+
+    implementGetService(out, fqName, true /* isTry */);
+    implementGetService(out, fqName, false /* isTry */);
 
     out << "::android::status_t " << interfaceName << "::registerAsService("
         << "const std::string &serviceName) ";
@@ -1848,7 +1918,7 @@ status_t AST::generateInterfaceSource(Formatter &out) const {
         method->generateCppSignature(out, iface->localName());
         if (reserved) {
             out.block([&]() {
-                method->cppImpl(IMPL_HEADER, out);
+                method->cppImpl(IMPL_INTERFACE, out);
             }).endl();
         }
 
