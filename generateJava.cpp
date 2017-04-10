@@ -160,7 +160,7 @@ status_t AST::generateJava(
         << ifaceName
         << "\";\n\n";
 
-    out << "public static "
+    out << "/* package private */ static "
         << ifaceName
         << " asInterface(android.os.IHwBinder binder) {\n";
 
@@ -188,7 +188,37 @@ status_t AST::generateJava(
     out.unindent();
     out << "}\n\n";
 
-    out << "return new " << ifaceName << ".Proxy(binder);\n";
+    out << ifaceName << " proxy = new " << ifaceName << ".Proxy(binder);\n\n";
+    out << "try {\n";
+    out.indent();
+    out << "for (String descriptor : proxy.interfaceChain()) {\n";
+    out.indent();
+    out << "if (descriptor.equals(kInterfaceName)) {\n";
+    out.indent();
+    out << "return proxy;\n";
+    out.unindent();
+    out << "}\n";
+    out.unindent();
+    out << "}\n";
+    out.unindent();
+    out << "} catch (android.os.RemoteException e) {\n";
+    out.indent();
+    out.unindent();
+    out << "}\n\n";
+
+    out << "return null;\n";
+
+    out.unindent();
+    out << "}\n\n";
+
+    out << "public static "
+        << ifaceName
+        << " castFrom(android.os.IHwInterface iface) {\n";
+    out.indent();
+
+    out << "return (iface == null) ? null : "
+        << ifaceName
+        << ".asInterface(iface.asBinder());\n";
 
     out.unindent();
     out << "}\n\n";
@@ -248,9 +278,9 @@ status_t AST::generateJava(
 
             out.indent();
 
-            out << "public void onValues("
-                << Method::GetJavaArgSignature(method->results())
-                << ");\n";
+            out << "public void onValues(";
+            method->emitJavaResultSignature(out);
+            out << ");\n";
 
             out.unindent();
             out << "}\n\n";
@@ -264,8 +294,8 @@ status_t AST::generateJava(
 
         out << " "
             << method->name()
-            << "("
-            << Method::GetJavaArgSignature(method->args());
+            << "(";
+        method->emitJavaArgSignature(out);
 
         if (needsCallback) {
             if (!method->args().empty()) {
@@ -340,8 +370,8 @@ status_t AST::generateJava(
 
         out << " "
             << method->name()
-            << "("
-            << Method::GetJavaArgSignature(method->args());
+            << "(";
+        method->emitJavaArgSignature(out);
 
         if (needsCallback) {
             if (!method->args().empty()) {
@@ -472,9 +502,9 @@ status_t AST::generateJava(
             << resultType
             << " "
             << method->name()
-            << "("
-            << Method::GetJavaArgSignature(method->args())
-            << ") {\n";
+            << "(";
+        method->emitJavaArgSignature(out);
+        out << ") {\n";
 
         out.indent();
         method->javaImpl(IMPL_INTERFACE, out);
@@ -604,9 +634,9 @@ status_t AST::generateJava(
             out.indent();
 
             out << "@Override\n"
-                << "public void onValues("
-                << Method::GetJavaArgSignature(method->results())
-                << ") {\n";
+                << "public void onValues(";
+            method->emitJavaResultSignature(out);
+            out << ") {\n";
 
             out.indent();
             out << "_hidl_reply.writeStatus(android.os.HwParcel.STATUS_SUCCESS);\n";

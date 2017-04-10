@@ -44,6 +44,8 @@ struct ArrayType : public Type {
     std::string getCppType(StorageMode mode,
                            bool specifyNamespaces) const override;
 
+    std::string getInternalDataCppType() const;
+
     void addNamedTypesToSet(std::set<const FQName> &set) const override;
 
     std::string getJavaType(bool forInitializer) const override;
@@ -125,6 +127,7 @@ struct ArrayType : public Type {
     status_t emitVtsTypeDeclarations(Formatter &out) const override;
 
     bool isJavaCompatible() const override;
+    bool containsPointer() const override;
 
     void getAlignmentAndSize(size_t *align, size_t *size) const override;
 

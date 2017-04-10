@@ -168,18 +168,42 @@ static void implementGetService(Formatter &out,
         << "::android::sp<" << interfaceName << "> " << interfaceName << "::" << functionName << "("
         << "const std::string &serviceName, const bool getStub) ";
     out.block([&] {
-        out << "::android::sp<" << interfaceName << "> iface = nullptr;\n";
-        out << "::android::vintf::Transport transport = ::android::hardware::getTransport("
-            << interfaceName << "::descriptor, serviceName);\n";
+        out << "using ::android::hardware::defaultServiceManager;\n";
+        out << "using ::android::hardware::details::waitForHwService;\n";
+        out << "using ::android::hardware::getPassthroughServiceManager;\n";
+        out << "using ::android::hardware::Return;\n";
+        out << "using ::android::sp;\n";
+        out << "using Transport = ::android::hidl::manager::V1_0::IServiceManager::Transport;\n\n";
 
-        // TODO(b/34274385) remove sysprop check
-        out << "const bool vintfHwbinder = (transport == ::android::vintf::Transport::HWBINDER) ||\n"
-            << "                           (transport == ::android::vintf::Transport::TOGGLED &&\n"
-            << "                            ::android::hardware::details::blockingHalBinderizationEnabled());\n"
-            << "const bool vintfPassthru = (transport == ::android::vintf::Transport::PASSTHROUGH) ||\n"
-            << "                           (transport == ::android::vintf::Transport::TOGGLED &&\n"
-            << "                            !::android::hardware::details::blockingHalBinderizationEnabled());\n"
-            << "const bool vintfEmpty    = (transport == ::android::vintf::Transport::EMPTY);\n\n";
+        out << "sp<" << interfaceName << "> iface = nullptr;\n";
+
+        out.endl();
+
+        out << "const sp<::android::hidl::manager::V1_0::IServiceManager> sm"
+            << " = defaultServiceManager();\n";
+
+        out.sIf("sm == nullptr", [&] {
+            // hwbinder is not available on this device, so future tries
+            // would also be null. I can only return nullptr.
+            out << "ALOGE(\"getService: defaultServiceManager() is null\");\n"
+                << "return nullptr;\n";
+        }).endl().endl();
+
+        out << "Return<Transport> transportRet = sm->getTransport("
+            << interfaceName << "::descriptor, serviceName);\n\n";
+
+        out.sIf("!transportRet.isOk()", [&] {
+            out << "ALOGE(\"getService: defaultServiceManager()->getTransport returns %s\", "
+                << "transportRet.description().c_str());\n";
+            out << "return nullptr;\n";
+        });
+
+        out.endl();
+
+        out << "Transport transport = transportRet;\n";
+        out << "const bool vintfHwbinder = (transport == Transport::HWBINDER);\n"
+            << "const bool vintfPassthru = (transport == Transport::PASSTHROUGH);\n"
+            << "const bool vintfEmpty    = (transport == Transport::EMPTY);\n\n";
 
         // if (getStub) {
         //     getPassthroughServiceManager()->get only once.
@@ -208,27 +232,15 @@ static void implementGetService(Formatter &out,
 
             out << "tried = true;\n";
 
-            out << "const ::android::sp<::android::hidl::manager::V1_0::IServiceManager> sm\n";
-            out.indent(2, [&] {
-                out << "= ::android::hardware::defaultServiceManager();\n";
-            });
-            out.sIf("sm == nullptr", [&] {
-                // hwbinder is not available on this device, so future tries
-                // would also be null. I can only "break" here and
-                // (vintfEmpty) try passthrough or (vintfHwbinder) return nullptr.
-                out << "ALOGE(\"getService: defaultServiceManager() is null\");\n"
-                    << "break;\n";
-            }).endl();
 
             if (!isTry) {
                 out.sIf("vintfHwbinder", [&] {
-                    out << "::android::hardware::details::waitForHwService("
-                        << interfaceName << "::descriptor" << ", serviceName);\n";
+                    out << "waitForHwService("
+                        << interfaceName << "::descriptor, serviceName);\n";
                 }).endl();
             }
 
-            out << "::android::hardware::Return<::android::sp<"
-                << gIBaseFqName.cppName() << ">> ret = \n";
+            out << "Return<sp<" << gIBaseFqName.cppName() << ">> ret = \n";
             out.indent(2, [&] {
                 out << "sm->get(" << interfaceName << "::descriptor, serviceName);\n";
             });
@@ -240,16 +252,35 @@ static void implementGetService(Formatter &out,
                     << "break;\n";
             }).endl();
 
-            out << "iface = " << interfaceName << "::castFrom(ret);\n";
-            out.sIf("iface == nullptr", [&] {
-                // 1. race condition. hwservicemanager drops the service
-                //    from waitForHwService to here
-                // 2. service is dead (castFrom cannot call interfaceChain)
-                // 3. returned service isn't of correct type; this is a bug
-                //    to hwservicemanager or to the service itself (interfaceChain
-                //    is not consistent)
-                // In all cases, try again.
+            out << "sp<" << gIBaseFqName.cppName() << "> base = ret;\n";
+            out.sIf("base == nullptr", [&] {
+                // race condition. hwservicemanager drops the service
+                // from waitForHwService to here
                 out << "ALOGW(\"getService: found null hwbinder interface\");\n"
+                    << (isTry ? "break" : "continue")
+                    << ";\n";
+            }).endl();
+            out << "Return<sp<" << interfaceName
+                << ">> castRet = " << interfaceName << "::castFrom(base, true /* emitError */);\n";
+            out.sIf("!castRet.isOk()", [&] {
+                out.sIf("castRet.isDeadObject()", [&] {
+                    // service is dead (castFrom cannot call interfaceChain)
+                    out << "ALOGW(\"getService: found dead hwbinder service\");\n"
+                        << (isTry ? "break" : "continue")
+                        << ";\n";
+                }).sElse([&] {
+                    out << "ALOGW(\"getService: cannot call into hwbinder service: %s"
+                        << "; No permission? Check for selinux denials.\", "
+                        << "castRet.description().c_str());\n"
+                        << "break;\n";
+                }).endl();
+            }).endl();
+            out << "iface = castRet;\n";
+            out.sIf("iface == nullptr", [&] {
+                // returned service isn't of correct type; this is a bug
+                // to hwservicemanager or to the service itself (interfaceChain
+                // is not consistent).
+                out << "ALOGW(\"getService: received incompatible service; bug in hwservicemanager?\");\n"
                     << "break;\n";
             }).endl();
 
@@ -257,18 +288,16 @@ static void implementGetService(Formatter &out,
         }).endl();
 
         out.sIf("getStub || vintfPassthru || vintfEmpty", [&] {
-            out << "const ::android::sp<::android::hidl::manager::V1_0::IServiceManager> pm\n";
-            out.indent(2, [&] {
-                out << "= ::android::hardware::getPassthroughServiceManager();\n";
-            });
+            out << "const sp<::android::hidl::manager::V1_0::IServiceManager> pm"
+                << " = getPassthroughServiceManager();\n";
 
             out.sIf("pm != nullptr", [&] () {
-                out << "::android::hardware::Return<::android::sp<" << gIBaseFqName.cppName() << ">> ret = \n";
+                out << "Return<sp<" << gIBaseFqName.cppName() << ">> ret = \n";
                 out.indent(2, [&] {
                     out << "pm->get(" << interfaceName << "::descriptor" << ", serviceName);\n";
                 });
                 out.sIf("ret.isOk()", [&] {
-                    out << "::android::sp<" << gIBaseFqName.cppName()
+                    out << "sp<" << gIBaseFqName.cppName()
                         << "> baseInterface = ret;\n";
                     out.sIf("baseInterface != nullptr", [&]() {
                         out << "iface = new " << fqName.getInterfacePassthroughName()
@@ -432,10 +461,9 @@ status_t AST::generateInterfaceHeader(const std::string &outputPath) const {
             if (elidedReturn == nullptr && returnsValue) {
                 out << "using "
                     << method->name()
-                    << "_cb = std::function<void("
-                    << Method::GetArgSignature(method->results(),
-                                               true /* specify namespaces */)
-                    << ")>;\n";
+                    << "_cb = std::function<void(";
+                method->emitCppResultSignature(out, true /* specify namespaces */);
+                out << ")>;\n";
             }
 
             method->dumpAnnotations(out);
@@ -448,9 +476,8 @@ status_t AST::generateInterfaceHeader(const std::string &outputPath) const {
             }
 
             out << method->name()
-                << "("
-                << Method::GetArgSignature(method->args(),
-                                           true /* specify namespaces */);
+                << "(";
+            method->emitCppArgSignature(out, true /* specify namespaces */);
 
             if (returnsValue && elidedReturn == nullptr) {
                 if (!method->args().empty()) {
@@ -475,12 +502,12 @@ status_t AST::generateInterfaceHeader(const std::string &outputPath) const {
         std::string childTypeResult = iface->getCppResultType();
 
         for (const Interface *superType : iface->typeChain()) {
-            out << "static "
+            out << "static ::android::hardware::Return<"
                 << childTypeResult
-                << " castFrom("
+                << "> castFrom("
                 << superType->getCppArgumentType()
                 << " parent"
-                << ");\n";
+                << ", bool emitError = false);\n";
         }
 
         out << "\nstatic const char* descriptor;\n\n";
@@ -671,30 +698,18 @@ status_t AST::generatePassthroughMethod(Formatter &out,
         << method->name()
         << "(";
 
-    bool first = true;
-    for (const auto &arg : method->args()) {
-        if (!first) {
-            out << ", ";
-        }
-        first = false;
+    out.join(method->args().begin(), method->args().end(), ", ", [&](const auto &arg) {
         out << (arg->type().isInterface() ? "_hidl_wrapped_" : "") << arg->name();
-    }
+    });
     if (returnsValue && elidedReturn == nullptr) {
         if (!method->args().empty()) {
             out << ", ";
         }
         out << "[&](";
-        first = true;
-        for (const auto &arg : method->results()) {
-            if (!first) {
-                out << ", ";
-            }
-
+        out.join(method->results().begin(), method->results().end(), ", ", [&](const auto &arg) {
             out << "const auto &_hidl_out_"
                 << arg->name();
-
-            first = false;
-        }
+        });
 
         out << ") {\n";
         out.indent();
@@ -718,15 +733,10 @@ status_t AST::generatePassthroughMethod(Formatter &out,
         }
 
         out << "_hidl_cb(";
-        first = true;
-        for (const auto &arg : method->results()) {
-            if (!first) {
-                out << ", ";
-            }
-            first = false;
+        out.join(method->results().begin(), method->results().end(), ", ", [&](const auto &arg) {
             out << (arg->type().isInterface() ? "_hidl_out_wrapped_" : "_hidl_out_")
                 << arg->name();
-        }
+        });
         out << ");\n";
         out.unindent();
         out << "});\n\n";
@@ -1342,19 +1352,12 @@ status_t AST::generateProxyMethodSource(Formatter &out,
         if (returnsValue && elidedReturn == nullptr) {
             out << "_hidl_cb(";
 
-            bool first = true;
-            for (const auto &arg : method->results()) {
-                if (!first) {
-                    out << ", ";
-                }
-
+            out.join(method->results().begin(), method->results().end(), ", ", [&] (const auto &arg) {
                 if (arg->type().resultNeedsDeref()) {
                     out << "*";
                 }
                 out << "_hidl_out_" << arg->name();
-
-                first = false;
-            }
+            });
 
             out << ");\n\n";
         }
@@ -1641,20 +1644,12 @@ status_t AST::generateStubSourceForMethod(
             << callee << "->" << method->name()
             << "(";
 
-        bool first = true;
-        for (const auto &arg : method->args()) {
-            if (!first) {
-                out << ", ";
-            }
-
+        out.join(method->args().begin(), method->args().end(), ", ", [&] (const auto &arg) {
             if (arg->type().resultNeedsDeref()) {
                 out << "*";
             }
-
             out << arg->name();
-
-            first = false;
-        }
+        });
 
         out << ");\n\n";
         out << "::android::hardware::writeToParcel(::android::hardware::Status::ok(), "
@@ -1693,38 +1688,24 @@ status_t AST::generateStubSourceForMethod(
 
         out << callee << "->" << method->name() << "(";
 
-        bool first = true;
-        for (const auto &arg : method->args()) {
-            if (!first) {
-                out << ", ";
-            }
-
+        out.join(method->args().begin(), method->args().end(), ", ", [&] (const auto &arg) {
             if (arg->type().resultNeedsDeref()) {
                 out << "*";
             }
 
             out << arg->name();
-
-            first = false;
-        }
+        });
 
         if (returnsValue) {
-            if (!first) {
+            if (!method->args().empty()) {
                 out << ", ";
             }
 
             out << "[&](";
 
-            first = true;
-            for (const auto &arg : method->results()) {
-                if (!first) {
-                    out << ", ";
-                }
-
+            out.join(method->results().begin(), method->results().end(), ", ", [&](const auto &arg) {
                 out << "const auto &_hidl_out_" << arg->name();
-
-                first = false;
-            }
+            });
 
             out << ") {\n";
             out.indent();
@@ -1931,13 +1912,15 @@ status_t AST::generateInterfaceSource(Formatter &out) const {
     }
 
     for (const Interface *superType : iface->typeChain()) {
-        out << "// static \n"
+        out << "// static \n::android::hardware::Return<"
             << childTypeResult
-            << " "
+            << "> "
             << iface->localName()
             << "::castFrom("
             << superType->getCppArgumentType()
-            << " parent) {\n";
+            << " parent, bool "
+            << (iface == superType ? "/* emitError */" : "emitError")
+            << ") {\n";
         out.indent();
         if (iface == superType) {
             out << "return parent;\n";
@@ -1952,7 +1935,7 @@ status_t AST::generateInterfaceSource(Formatter &out) const {
             out.indent();
             out << "parent, \""
                 << iface->fqName().string()
-                << "\");\n";
+                << "\", emitError);\n";
             out.unindent();
             out.unindent();
         }

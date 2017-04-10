@@ -345,7 +345,7 @@ status_t CompoundType::emitTypeDeclarations(Formatter &out) const {
 
     Scope::emitTypeDeclarations(out);
 
-    if (!isJavaCompatible()) {
+    if (containsPointer()) {
         for (const auto &field : *mFields) {
             out << field->type().getCppStackType()
                 << " "
@@ -387,7 +387,9 @@ status_t CompoundType::emitTypeDeclarations(Formatter &out) const {
                     << ", \"wrong offset\");\n";
             }
 
-            offset += fieldSize;
+            if (mStyle == STYLE_STRUCT) {
+                offset += fieldSize;
+            }
         }
 
         if (pass == 0) {
@@ -603,14 +605,9 @@ status_t CompoundType::emitJavaTypeDeclarations(
         out.block([&] {
             out << "return java.util.Objects.hash(\n";
             out.indent(2, [&] {
-                bool first = true;
-                for (const auto &field : *mFields) {
-                    if (!first) {
-                        out << ", \n";
-                    }
-                    first = false;
+                out.join(mFields->begin(), mFields->end(), ", \n", [&] (const auto &field) {
                     out << "android.os.HidlSupport.deepHashCode(this." << field->name() << ")";
-                }
+                });
             });
             out << ");\n";
         }).endl().endl();
@@ -1039,8 +1036,23 @@ bool CompoundType::isJavaCompatible() const {
     return true;
 }
 
+bool CompoundType::containsPointer() const {
+    if (Scope::containsPointer()) {
+        return true;
+    }
+
+    for (const auto &field : *mFields) {
+        if (field->type().containsPointer()) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 void CompoundType::getAlignmentAndSize(size_t *align, size_t *size) const {
     *align = 1;
+    *size = 0;
 
     size_t offset = 0;
     for (const auto &field : *mFields) {
@@ -1056,20 +1068,26 @@ void CompoundType::getAlignmentAndSize(size_t *align, size_t *size) const {
             offset += fieldAlign - pad;
         }
 
-        offset += fieldSize;
+        if (mStyle == STYLE_STRUCT) {
+            offset += fieldSize;
+        } else {
+            *size = std::max(*size, fieldSize);
+        }
 
         if (fieldAlign > (*align)) {
             *align = fieldAlign;
         }
     }
 
-    // Final padding to account for the structure's alignment.
-    size_t pad = offset % (*align);
-    if (pad > 0) {
-        offset += (*align) - pad;
+    if (mStyle == STYLE_STRUCT) {
+        *size = offset;
     }
 
-    *size = offset;
+    // Final padding to account for the structure's alignment.
+    size_t pad = (*size) % (*align);
+    if (pad > 0) {
+        (*size) += (*align) - pad;
+    }
 
     if (*size == 0) {
         // An empty struct still occupies a byte of space in C++.

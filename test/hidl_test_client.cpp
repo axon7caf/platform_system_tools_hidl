@@ -20,6 +20,7 @@
 #include <android/hardware/tests/bar/1.0/IComplicated.h>
 #include <android/hardware/tests/bar/1.0/IImportRules.h>
 #include <android/hardware/tests/baz/1.0/IBaz.h>
+#include <android/hardware/tests/hash/1.0/IHash.h>
 #include <android/hardware/tests/inheritance/1.0/IFetcher.h>
 #include <android/hardware/tests/inheritance/1.0/IGrandparent.h>
 #include <android/hardware/tests/inheritance/1.0/IParent.h>
@@ -84,6 +85,7 @@ using ::android::hardware::tests::foo::V1_0::implementation::FooCallback;
 using ::android::hardware::tests::bar::V1_0::IBar;
 using ::android::hardware::tests::bar::V1_0::IComplicated;
 using ::android::hardware::tests::baz::V1_0::IBaz;
+using ::android::hardware::tests::hash::V1_0::IHash;
 using ::android::hardware::tests::inheritance::V1_0::IFetcher;
 using ::android::hardware::tests::inheritance::V1_0::IGrandparent;
 using ::android::hardware::tests::inheritance::V1_0::IParent;
@@ -351,8 +353,9 @@ public:
     sp<IPointer> pointerInterface;
     sp<IPointer> validationPointerInterface;
     TestMode mode;
-
-    HidlEnvironment(TestMode mode) : mode(mode) {};
+    bool enableDelayMeasurementTests;
+    HidlEnvironment(TestMode mode, bool enableDelayMeasurementTests) :
+        mode(mode), enableDelayMeasurementTests(enableDelayMeasurementTests) {};
 
     void getServices() {
         manager = IServiceManager::getService();
@@ -478,6 +481,17 @@ TEST_F(HidlTest, ToStringTest) {
     // statement can be written here.
 }
 
+TEST_F(HidlTest, PassthroughLookupTest) {
+    // IFoo is special because it returns an interface no matter
+    //   what instance name is requested. In general, this is BAD!
+    EXPECT_NE(nullptr, IFoo::getService("", true /* getStub */).get());
+    EXPECT_NE(nullptr, IFoo::getService("a", true /* getStub */).get());
+    EXPECT_NE(nullptr, IFoo::getService("asdf", true /* getStub */).get());
+    EXPECT_NE(nullptr, IFoo::getService("::::::::", true /* getStub */).get());
+    EXPECT_NE(nullptr, IFoo::getService("/////", true /* getStub */).get());
+    EXPECT_NE(nullptr, IFoo::getService("\n", true /* getStub */).get());
+}
+
 TEST_F(HidlTest, EnumToStringTest) {
     using namespace std::string_literals;
     using ::android::hardware::tests::foo::V1_0::toString;
@@ -504,6 +518,21 @@ TEST_F(HidlTest, TryGetServiceTest) {
 
     sp<IServiceManager> manager = IServiceManager::tryGetService();
     ASSERT_NE(manager, nullptr);
+}
+
+TEST_F(HidlTest, HashTest) {
+    uint8_t ihash[32] = {74,38,204,105,102,117,11,15,207,7,238,198,29,35,30,62,100,
+            216,131,182,3,61,162,241,215,211,6,20,251,143,125,161};
+    auto service = IHash::getService(mode == PASSTHROUGH /* getStub */);
+    EXPECT_OK(service->getHashChain([&] (const auto &chain) {
+        EXPECT_EQ(chain[0].size(), 32u);
+        EXPECT_ARRAYEQ(ihash, chain[0], 32);
+        EXPECT_OK(manager->getHashChain([&] (const auto &managerChain) {
+            EXPECT_EQ(chain[chain.size() - 1].size(), managerChain[managerChain.size() - 1].size());
+            EXPECT_ARRAYEQ(chain[chain.size() - 1], managerChain[managerChain.size() - 1],
+                    chain[chain.size() - 1].size()) << "Hash for IBase doesn't match!";
+        }));
+    }));
 }
 
 TEST_F(HidlTest, ServiceListTest) {
@@ -654,29 +683,28 @@ TEST_F(HidlTest, ServiceAllNotificationTest) {
 }
 
 TEST_F(HidlTest, TestToken) {
-    Return<uint64_t> ret = tokenManager->createToken(manager);
+    Return<void> ret = tokenManager->createToken(manager, [&] (const hidl_vec<uint8_t> &token) {
+        Return<sp<IBase>> retService = tokenManager->get(token);
+        EXPECT_OK(retService);
+        if (retService.isOk()) {
+            sp<IBase> service = retService;
+            EXPECT_NE(nullptr, service.get());
+            sp<IServiceManager> retManager = IServiceManager::castFrom(service);
+
+            // TODO(b/33818800): should have only one Bp per process
+            // EXPECT_EQ(manager, retManager);
+
+            EXPECT_NE(nullptr, retManager.get());
+        }
+
+        Return<bool> unregisterRet = tokenManager->unregister(token);
+
+        EXPECT_OK(unregisterRet);
+        if (unregisterRet.isOk()) {
+            EXPECT_TRUE(unregisterRet);
+        }
+    });
     EXPECT_OK(ret);
-    uint64_t token = ret;
-
-    Return<sp<IBase>> retService = tokenManager->get(token);
-    EXPECT_OK(retService);
-    if (retService.isOk()) {
-        sp<IBase> service = retService;
-        EXPECT_NE(nullptr, service.get());
-        sp<IServiceManager> retManager = IServiceManager::castFrom(service);
-
-        // TODO(b/33818800): should have only one Bp per process
-        // EXPECT_EQ(manager, retManager);
-
-        EXPECT_NE(nullptr, retManager.get());
-    }
-
-    Return<bool> unregisterRet = tokenManager->unregister(token);
-
-    EXPECT_OK(unregisterRet);
-    if (unregisterRet.isOk()) {
-        EXPECT_TRUE(ret);
-    }
 }
 
 TEST_F(HidlTest, TestSharedMemory) {
@@ -821,6 +849,10 @@ TEST_F(HidlTest, FooMapThisVectorTest) {
 }
 
 TEST_F(HidlTest, WrapTest) {
+    if (!gHidlEnvironment->enableDelayMeasurementTests) {
+        return;
+    }
+
     using ::android::hardware::tests::foo::V1_0::BnHwSimple;
     using ::android::hardware::tests::foo::V1_0::BsSimple;
     using ::android::hardware::tests::foo::V1_0::BpHwSimple;
@@ -858,9 +890,10 @@ TEST_F(HidlTest, WrapTest) {
 }
 
 TEST_F(HidlTest, FooCallMeTest) {
-
+    if (!gHidlEnvironment->enableDelayMeasurementTests) {
+        return;
+    }
     sp<IFooCallback> fooCb = new FooCallback();
-
     ALOGI("CLIENT call callMe.");
     // callMe is oneway, should return instantly.
     nsecs_t now;
@@ -1753,7 +1786,7 @@ TEST_F(HidlTest, PointerReportErrorsTest) {
 }
 #endif
 
-int forkAndRunTests(TestMode mode) {
+int forkAndRunTests(TestMode mode, bool enableDelayMeasurementTests) {
     pid_t child;
     int status;
 
@@ -1764,7 +1797,8 @@ int forkAndRunTests(TestMode mode) {
 
     if ((child = fork()) == 0) {
         gHidlEnvironment = static_cast<HidlEnvironment *>(
-                ::testing::AddGlobalTestEnvironment(new HidlEnvironment(mode)));
+                ::testing::AddGlobalTestEnvironment(new HidlEnvironment(
+                        mode, enableDelayMeasurementTests)));
         int testStatus = RUN_ALL_TESTS();
         if(testStatus == 0) {
             exit(0);
@@ -1799,22 +1833,24 @@ void handleStatus(int status, const char *mode) {
 
 static void usage(const char *me) {
     fprintf(stderr,
-            "usage: %s [-b] [-p] [GTEST_OPTIONS]\n",
+            "usage: %s [-b] [-p] [-d] [GTEST_OPTIONS]\n",
             me);
 
     fprintf(stderr, "         -b binderized mode only\n");
     fprintf(stderr, "         -p passthrough mode only\n");
     fprintf(stderr, "            (if -b and -p are both missing or both present, "
                                  "both modes are tested.)\n");
+    fprintf(stderr, "         -d Enable delay measurement tests\n");
 }
 
 int main(int argc, char **argv) {
     const char *me = argv[0];
     bool b = false;
     bool p = false;
+    bool d = false;
     struct option longopts[] = {{0,0,0,0}};
     int res;
-    while ((res = getopt_long(argc, argv, "hbp", longopts, NULL)) >= 0) {
+    while ((res = getopt_long(argc, argv, "hbpd", longopts, NULL)) >= 0) {
         switch (res) {
             case 'h': {
                 usage(me);
@@ -1827,6 +1863,10 @@ int main(int argc, char **argv) {
 
             case 'p': {
                 p = true;
+            } break;
+
+            case 'd': {
+                d = true;
             } break;
 
             case '?':
@@ -1842,8 +1882,8 @@ int main(int argc, char **argv) {
     ::testing::InitGoogleTest(&argc, argv);
     // put test in child process because RUN_ALL_TESTS
     // should not be run twice.
-    int pStatus = p ? forkAndRunTests(PASSTHROUGH) : 0;
-    int bStatus = b ? forkAndRunTests(BINDERIZED)  : 0;
+    int pStatus = p ? forkAndRunTests(PASSTHROUGH, d) : 0;
+    int bStatus = b ? forkAndRunTests(BINDERIZED, d)  : 0;
 
     fprintf(stdout, "\n=========================================================\n\n"
                     "    Summary:\n\n");

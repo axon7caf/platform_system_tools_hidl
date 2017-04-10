@@ -96,6 +96,16 @@ std::string ArrayType::getCppType(StorageMode mode,
     CHECK(!"Should not be here");
 }
 
+std::string ArrayType::getInternalDataCppType() const {
+    std::string result = mElementType->getCppStackType();
+    for (size_t i = 0; i < mSizes.size(); ++i) {
+        result += "[";
+        result += mSizes[i]->cppValue();
+        result += "]";
+    }
+    return result;
+}
+
 std::string ArrayType::getJavaType(bool forInitializer) const {
     std::string base =
         mElementType->getJavaType(forInitializer);
@@ -502,6 +512,10 @@ status_t ArrayType::emitVtsTypeDeclarations(Formatter &out) const {
 
 bool ArrayType::isJavaCompatible() const {
     return mElementType->isJavaCompatible();
+}
+
+bool ArrayType::containsPointer() const {
+    return mElementType->containsPointer();
 }
 
 void ArrayType::getAlignmentAndSize(size_t *align, size_t *size) const {
