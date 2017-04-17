@@ -131,6 +131,14 @@ static std::string makeLibraryName(const FQName &packageFQName) {
     return packageFQName.string();
 }
 
+static std::string makeJavaLibraryName(const FQName &packageFQName) {
+    std::string out;
+    out = packageFQName.package();
+    out += "-V";
+    out += packageFQName.version();
+    return out;
+}
+
 static void generatePackagePathsSection(
         Formatter &out,
         Coordinator *coordinator,
@@ -484,7 +492,7 @@ static status_t generateMakefileForPackage(
         return -errno;
     }
 
-    const std::string libraryName = makeLibraryName(packageFQName);
+    const std::string libraryName = makeJavaLibraryName(packageFQName);
 
     Formatter out(file);
 
@@ -528,7 +536,7 @@ static status_t generateMakefileForPackage(
             out.indent();
             for (const auto &importedPackage : importedPackages) {
                 out << "\n"
-                    << makeLibraryName(importedPackage)
+                    << makeJavaLibraryName(importedPackage)
                     << "-java"
                     << staticSuffix
                     << " \\";
@@ -773,6 +781,7 @@ static status_t generateAndroidBpForPackage(
         << "generated_sources: [\"" << genSourceName << "\"],\n"
         << "generated_headers: [\"" << genHeaderName << "\"],\n"
         << "export_generated_headers: [\"" << genHeaderName << "\"],\n"
+        << "vendor_available: true,\n"
         << "shared_libs: [\n";
 
     out.indent();
