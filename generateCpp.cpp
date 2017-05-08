@@ -690,7 +690,10 @@ status_t AST::generatePassthroughMethod(Formatter &out,
     out << "auto _hidl_return = ";
 
     if (method->isOneway()) {
-        out << "addOnewayTask([this, &_hidl_error";
+        out << "addOnewayTask([mImpl = this->mImpl, "
+               "mEnableInstrumentation = this->mEnableInstrumentation, "
+               "mInstrumentationCallbacks = this->mInstrumentationCallbacks, "
+               "&_hidl_error";
         for (const auto &arg : method->args()) {
             out << ", "
                 << (arg->type().isInterface() ? "_hidl_wrapped_" : "")
@@ -698,7 +701,6 @@ status_t AST::generatePassthroughMethod(Formatter &out,
         }
         out << "] {\n";
         out.indent();
-        out << "this->";
     }
 
     out << "mImpl->"
@@ -1468,6 +1470,10 @@ status_t AST::generateStubSource(
         << "\") { \n";
     out.indent();
     out << "_hidl_mImpl = _hidl_impl;\n";
+    out << "auto prio = ::android::hardware::details::gServicePrioMap.get("
+        << "_hidl_impl, {SCHED_NORMAL, 0});\n";
+    out << "mSchedPolicy = prio.sched_policy;\n";
+    out << "mSchedPriority = prio.prio;\n";
     out.unindent();
 
     out.unindent();
