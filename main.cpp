@@ -18,6 +18,7 @@
 #include "Coordinator.h"
 #include "Scope.h"
 
+#include <hidl-hash/Hash.h>
 #include <hidl-util/Formatter.h>
 #include <hidl-util/FQName.h>
 #include <hidl-util/StringHelper.h>
@@ -129,6 +130,14 @@ static status_t generateSourcesForPackage(
 
 static std::string makeLibraryName(const FQName &packageFQName) {
     return packageFQName.string();
+}
+
+static std::string makeJavaLibraryName(const FQName &packageFQName) {
+    std::string out;
+    out = packageFQName.package();
+    out += "-V";
+    out += packageFQName.version();
+    return out;
 }
 
 static void generatePackagePathsSection(
@@ -484,7 +493,7 @@ static status_t generateMakefileForPackage(
         return -errno;
     }
 
-    const std::string libraryName = makeLibraryName(packageFQName);
+    const std::string libraryName = makeJavaLibraryName(packageFQName);
 
     Formatter out(file);
 
@@ -528,7 +537,7 @@ static status_t generateMakefileForPackage(
             out.indent();
             for (const auto &importedPackage : importedPackages) {
                 out << "\n"
-                    << makeLibraryName(importedPackage)
+                    << makeJavaLibraryName(importedPackage)
                     << "-java"
                     << staticSuffix
                     << " \\";
@@ -772,8 +781,20 @@ static status_t generateAndroidBpForPackage(
     out << "name: \"" << libraryName << "\",\n"
         << "generated_sources: [\"" << genSourceName << "\"],\n"
         << "generated_headers: [\"" << genHeaderName << "\"],\n"
-        << "export_generated_headers: [\"" << genHeaderName << "\"],\n"
-        << "shared_libs: [\n";
+        << "export_generated_headers: [\"" << genHeaderName << "\"],\n";
+
+    // TODO(b/35813011): make always vendor_available
+    // Explicitly mark libraries vendor until BOARD_VNDK_VERSION can
+    // be enabled.
+    if (packageFQName.inPackage("android.hidl") ||
+            packageFQName.inPackage("android.system") ||
+            packageFQName.inPackage("android.frameworks") ||
+            packageFQName.inPackage("android.hardware")) {
+        out << "vendor_available: true,\n";
+    } else {
+        out << "vendor: true,\n";
+    }
+    out << "shared_libs: [\n";
 
     out.indent();
     out << "\"libhidlbase\",\n"
@@ -1039,6 +1060,43 @@ static status_t generateExportHeaderForPackage(
     return OK;
 }
 
+static status_t generateHashOutput(const FQName &fqName,
+        const char* /*hidl_gen*/,
+        Coordinator *coordinator,
+        const std::string & /*outputDir*/) {
+
+    status_t err;
+    std::vector<FQName> packageInterfaces;
+
+    if (fqName.isFullyQualified()) {
+        packageInterfaces = {fqName};
+    } else {
+        err = coordinator->appendPackageInterfacesToVector(
+                fqName, &packageInterfaces);
+        if (err != OK) {
+            return err;
+        }
+    }
+
+    for (const auto &currentFqName : packageInterfaces) {
+        AST *ast = coordinator->parse(currentFqName);
+
+        if (ast == NULL) {
+            fprintf(stderr,
+                    "ERROR: Could not parse %s. Aborting.\n",
+                    currentFqName.string().c_str());
+
+            return UNKNOWN_ERROR;
+        }
+
+        printf("%s %s\n",
+                Hash::getHash(ast->getFilename()).hexString().c_str(),
+                currentFqName.string().c_str());
+    }
+
+    return OK;
+}
+
 static std::vector<OutputHandler> formats = {
     {"c++",
      OutputHandler::NEEDS_DIR /* mOutputMode */,
@@ -1177,7 +1235,13 @@ static std::vector<OutputHandler> formats = {
      OutputHandler::NEEDS_DIR /* mOutputMode */,
      validateForMakefile,
      generateAndroidBpImplForPackage,
-    }
+    },
+
+    {"hash",
+     OutputHandler::NOT_NEEDED /* mOutputMode */,
+     validateForSource,
+     generateHashOutput,
+    },
 };
 
 static void usage(const char *me) {
@@ -1319,6 +1383,8 @@ int main(int argc, char **argv) {
             outputFormat->validate(fqName, outputFormat->mKey);
 
         if (valid == OutputHandler::FAILED) {
+            fprintf(stderr,
+                    "ERROR: output handler failed.\n");
             exit(1);
         }
 
